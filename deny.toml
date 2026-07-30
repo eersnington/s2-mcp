@@ -1,0 +1,38 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    # Required by pinned deno_core 0.381.1. This is a maintenance-status
+    # advisory with no safe upgrade; bincode is used inside the isolated executor process.
+    { id = "RUSTSEC-2025-0141", reason = "unavoidable deno_core dependency" },
+    # Required by the pinned rusty_v8 145 bindings. This is a maintenance-status advisory with no
+    # replacement available without changing the embedded JavaScript engine.
+    { id = "RUSTSEC-2024-0436", reason = "unavoidable deno_core/rusty_v8 dependency" },
+]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,27 @@
+[package]
+name = "s2-mcp-codemode"
+version = "0.1.0"
+description = "Isolated TypeScript Code Mode runtime"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+deno_ast = { workspace = true }
+deno_core = { workspace = true }
+deno_error = { workspace = true }
+# rusty_v8's temporal_rs 0.1.2 is not compatible with ICU 2.2.
+icu_calendar = { workspace = true }
+icu_locale = { workspace = true }
+icu_normalizer = { workspace = true }
+icu_properties = { workspace = true }
+icu_provider = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[lints]
+workspace = true

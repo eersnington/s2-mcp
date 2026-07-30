@@ -1,0 +1,42 @@
+[package]
+name = "s2-mcp"
+version = "0.1.0"
+description = "Model Context Protocol server for S2"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["s2", "mcp", "streams", "ai"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "s2_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "s2-mcp"
+path = "src/main.rs"
+
+[dependencies]
+base64ct = { workspace = true, features = ["alloc"] }
+clap = { workspace = true, features = ["derive"] }
+dirs = { workspace = true }
+rmcp = { workspace = true, default-features = false, features = ["server", "transport-io"] }
+s2-mcp-codemode = { workspace = true }
+s2-sdk = { workspace = true, features = ["_hidden"] }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd = "2.2"
+predicates = "3.1"
+tempfile = "3.27"
+
+[lints]
+workspace = true

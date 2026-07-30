@@ -1,0 +1,13 @@
+# Rust workspace artifacts
+target/
+/crates/*/Cargo.lock
+**/*.rs.bk
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Logs and operating-system metadata
+*.log
+.DS_Store
