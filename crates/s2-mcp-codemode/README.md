@@ -5,6 +5,7 @@ The `s2-mcp-codemode` crate generates the TypeScript API, transpiles submitted c
 ## Runtime behavior
 
 Each `execute` request starts a child process with an empty inherited environment. Cancellation or timeout terminates the child.
+The server runs at most four Code Mode executor child processes concurrently.
 
 Code Mode rejects static and dynamic imports. It does not expose the host process, environment, filesystem, network, or WebAssembly.
 

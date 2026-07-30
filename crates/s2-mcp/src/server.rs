@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::{
@@ -11,6 +13,7 @@ use s2_mcp_codemode::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::{
     catalog::{Catalog, json_object_schema},
@@ -38,9 +41,12 @@ enum Surface {
 #[derive(Clone)]
 pub struct S2McpServer {
     connection: S2Configuration,
+    executor_permits: Arc<Semaphore>,
     policy: Policy,
     surface: Surface,
 }
+
+const MAX_CONCURRENT_EXECUTORS: usize = 4;
 
 impl S2McpServer {
     pub(crate) fn new(
@@ -57,6 +63,7 @@ impl S2McpServer {
         };
         Ok(Self {
             connection,
+            executor_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
             policy: options.policy.clone(),
             surface,
         })
@@ -121,6 +128,14 @@ impl S2McpServer {
             }
             "execute" => {
                 let input = decode(arguments)?;
+                let _permit = self
+                    .executor_permits
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|error| {
+                        Error::CodeMode(format!("executor concurrency limiter closed: {error}"))
+                    })?;
                 Ok(serde_json::to_value(
                     execute_in_subprocess(input, &self.connection, &self.policy).await?,
                 )?)

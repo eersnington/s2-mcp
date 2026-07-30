@@ -57,12 +57,17 @@ async function run() {
 #[test]
 fn cancellation_kills_the_executor_and_server_recovers() -> TestResult {
     let mut client = Client::start()?;
-    let request_id = client.send_execute("async function run() { while (true) {} }")?;
+    let mut request_ids = Vec::new();
+    for _ in 0..4 {
+        request_ids.push(client.send_execute("async function run() { while (true) {} }")?);
+    }
     thread::sleep(Duration::from_millis(500));
-    client.notify(
-        "notifications/cancelled",
-        json!({ "requestId": request_id, "reason": "test" }),
-    )?;
+    for request_id in request_ids {
+        client.notify(
+            "notifications/cancelled",
+            json!({ "requestId": request_id, "reason": "test" }),
+        )?;
+    }
 
     let output = client.execute("async function run() { return 'recovered'; }")?;
     assert_eq!(output["output"], json!("recovered"));
