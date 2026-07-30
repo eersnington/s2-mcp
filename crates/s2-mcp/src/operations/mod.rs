@@ -8,7 +8,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
-    catalog::Catalog,
+    catalog::OperationId,
     config::ConnectionConfig,
     error::{Error, Result},
     policy::Policy,
@@ -19,30 +19,16 @@ pub(crate) mod basin;
 pub(crate) mod records;
 pub(crate) mod stream;
 
-pub(crate) type SharedOperationHandler = Arc<Operations>;
-
-pub(crate) async fn dispatch(
-    handler: &Operations,
-    catalog: &Catalog,
-    policy: &Policy,
-    name: &str,
-    arguments: Value,
-) -> Result<Value> {
-    let operation = catalog.find(name).ok_or(Error::Forbidden)?;
-    policy.enforce_operation(operation.access, operation.scope)?;
-    handler.dispatch(name, arguments).await
-}
-
 #[derive(Clone)]
 pub(crate) struct Operations {
     pub(super) s2: S2,
     pub(super) connection: ConnectionConfig,
     pub(super) encryption_key: Option<EncryptionKey>,
-    pub(super) policy: Policy,
+    pub(super) policy: Arc<Policy>,
 }
 
 impl Operations {
-    pub(crate) fn new(connection: ConnectionConfig, policy: Policy) -> Result<Self> {
+    pub(crate) fn new(connection: ConnectionConfig, policy: Arc<Policy>) -> Result<Self> {
         let encryption_key = connection.encryption_key()?;
         let s2 = S2::new(connection.sdk_config()?)?;
         Ok(Self {
@@ -53,29 +39,28 @@ impl Operations {
         })
     }
 
-    pub(crate) async fn dispatch(&self, name: &str, arguments: Value) -> Result<Value> {
-        match name {
-            "connection_info" => self.connection_info(arguments),
-            "list_basins" => self.list_basins(arguments).await,
-            "get_basin_config" => self.get_basin_config(arguments).await,
-            "list_streams" => self.list_streams(arguments).await,
-            "get_stream_config" => self.get_stream_config(arguments).await,
-            "check_tail" => self.check_tail(arguments).await,
-            "read_records" => self.read_records(arguments).await,
-            "wait_for_records" => self.wait_for_records(arguments).await,
-            "diff_resources" => self.diff_resources(arguments).await,
-            "get_metrics" => self.get_metrics(arguments).await,
-            "ensure_basin" => self.ensure_basin(arguments).await,
-            "ensure_stream" => self.ensure_stream(arguments).await,
-            "append_records" => self.append_records(arguments).await,
-            "reconfigure_basin" => self.reconfigure_basin(arguments).await,
-            "reconfigure_stream" => self.reconfigure_stream(arguments).await,
-            "fence_stream" => self.fence_stream(arguments).await,
-            "delete_basin" => self.delete_basin(arguments).await,
-            "delete_stream" => self.delete_stream(arguments).await,
-            "trim_stream" => self.trim_stream(arguments).await,
-            "revoke_access_token" => self.revoke_access_token(arguments).await,
-            _ => Err(Error::Forbidden),
+    pub(crate) async fn dispatch(&self, id: OperationId, arguments: Value) -> Result<Value> {
+        match id {
+            OperationId::ConnectionInfo => self.connection_info(arguments),
+            OperationId::ListBasins => self.list_basins(arguments).await,
+            OperationId::GetBasinConfig => self.get_basin_config(arguments).await,
+            OperationId::ListStreams => self.list_streams(arguments).await,
+            OperationId::GetStreamConfig => self.get_stream_config(arguments).await,
+            OperationId::CheckTail => self.check_tail(arguments).await,
+            OperationId::ReadRecords => self.read_records(arguments).await,
+            OperationId::WaitForRecords => self.wait_for_records(arguments).await,
+            OperationId::DiffResources => self.diff_resources(arguments).await,
+            OperationId::GetMetrics => self.get_metrics(arguments).await,
+            OperationId::EnsureBasin => self.ensure_basin(arguments).await,
+            OperationId::EnsureStream => self.ensure_stream(arguments).await,
+            OperationId::AppendRecords => self.append_records(arguments).await,
+            OperationId::ReconfigureBasin => self.reconfigure_basin(arguments).await,
+            OperationId::ReconfigureStream => self.reconfigure_stream(arguments).await,
+            OperationId::FenceStream => self.fence_stream(arguments).await,
+            OperationId::DeleteBasin => self.delete_basin(arguments).await,
+            OperationId::DeleteStream => self.delete_stream(arguments).await,
+            OperationId::TrimStream => self.trim_stream(arguments).await,
+            OperationId::RevokeAccessToken => self.revoke_access_token(arguments).await,
         }
     }
 }

@@ -39,8 +39,6 @@ impl Operations {
 
     pub(super) async fn list_basins(&self, arguments: Value) -> Result<Value> {
         let request: ListBasinsRequest = parse(arguments)?;
-        self.policy
-            .enforce_operation(Access::Read, Scope::Account)?;
         let limit = bounded(
             request.limit.unwrap_or(MAX_LIST_LIMIT),
             MAX_LIST_LIMIT,
@@ -67,7 +65,6 @@ impl Operations {
 
     pub(crate) async fn get_basin_config(&self, arguments: Value) -> Result<Value> {
         let request: GetBasinConfigRequest = parse(arguments)?;
-        self.policy.enforce_operation(Access::Read, Scope::Basin)?;
         self.policy.enforce_basin(&request.basin)?;
         let config = self.s2.get_basin_config(request.basin.parse()?).await?;
         serialize(GetBasinConfigOutput {
@@ -78,7 +75,6 @@ impl Operations {
 
     pub(crate) async fn ensure_basin(&self, arguments: Value) -> Result<Value> {
         let request: EnsureBasinRequest = parse(arguments)?;
-        self.policy.enforce_operation(Access::Write, Scope::Basin)?;
         self.policy.enforce_basin(&request.basin)?;
         let mut input = EnsureBasinInput::new(request.basin.parse()?);
         if let Some(config) = request.config {
@@ -101,7 +97,6 @@ impl Operations {
 
     pub(crate) async fn reconfigure_basin(&self, arguments: Value) -> Result<Value> {
         let request: ReconfigureBasinRequest = parse(arguments)?;
-        self.policy.enforce_operation(Access::Write, Scope::Basin)?;
         self.policy.enforce_basin(&request.basin)?;
         if request.config.is_empty() {
             return Err(Error::InvalidArguments(
@@ -119,8 +114,6 @@ impl Operations {
 
     pub(crate) async fn delete_basin(&self, arguments: Value) -> Result<Value> {
         let request: DeleteBasinRequest = parse(arguments)?;
-        self.policy
-            .enforce_operation(Access::Destructive, Scope::Basin)?;
         self.policy.enforce_basin(&request.basin)?;
         let input = DeleteBasinInput::new(request.basin.parse()?)
             .with_ignore_not_found(request.ignore_not_found);
@@ -130,8 +123,6 @@ impl Operations {
 
     pub(crate) async fn revoke_access_token(&self, arguments: Value) -> Result<Value> {
         let request: RevokeAccessTokenRequest = parse(arguments)?;
-        self.policy
-            .enforce_operation(Access::Destructive, Scope::Account)?;
         self.s2.revoke_access_token(request.id.parse()?).await?;
         serialize(RevokeAccessTokenOutput { revoked: true })
     }
@@ -282,6 +273,23 @@ pub(crate) enum GetMetricsRequest {
         set: AccountMetricSetDto,
         query: MetricQueryDto,
     },
+    Basin {
+        basin: String,
+        set: BasinMetricSetDto,
+        query: MetricQueryDto,
+    },
+    Stream {
+        basin: String,
+        stream: String,
+        set: StreamMetricSetDto,
+        query: MetricQueryDto,
+    },
+}
+
+#[derive(Debug, JsonSchema)]
+#[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(dead_code, reason = "this type is used only to generate JSON Schema")]
+pub(crate) enum BasinScopedGetMetricsSchema {
     Basin {
         basin: String,
         set: BasinMetricSetDto,

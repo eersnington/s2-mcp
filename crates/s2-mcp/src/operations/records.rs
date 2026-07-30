@@ -1,6 +1,7 @@
 use std::{
     io::{self, Write},
     ops::RangeTo,
+    str,
     time::Duration,
 };
 
@@ -298,7 +299,7 @@ enum EncodedBytes {
 
 impl EncodedBytes {
     fn encode(bytes: &[u8]) -> Self {
-        match std::str::from_utf8(bytes) {
+        match str::from_utf8(bytes) {
             Ok(value) => Self::Utf8(value.to_owned()),
             Err(_) => Self::Base64(Base64::encode_string(bytes)),
         }

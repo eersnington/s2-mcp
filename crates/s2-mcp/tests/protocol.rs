@@ -22,6 +22,15 @@ fn modes_expose_the_expected_tools() -> TestResult {
     let readonly = Session::start(&["--mode", "tools", "--readonly"])?.tool_names()?;
     assert_eq!(readonly.len(), 10);
     assert!(!readonly.iter().any(|name| name == "append_records"));
+
+    let mut basin_scoped = Session::start(&["--mode", "tools", "--basin", "example"])?;
+    let tools = basin_scoped.request("tools/list", json!({}))?;
+    let get_metrics_schema = tools["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "get_metrics"))
+        .and_then(|tool| tool.get("inputSchema"))
+        .ok_or("basin-scoped get_metrics input schema was unavailable")?;
+    assert!(!get_metrics_schema.to_string().contains("\"account\""));
     Ok(())
 }
 

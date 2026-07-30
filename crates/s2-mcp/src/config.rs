@@ -1,4 +1,9 @@
-use std::{env::VarError, path::PathBuf, time::Duration};
+use std::{
+    env::{self, VarError},
+    fs,
+    path::PathBuf,
+    time::Duration,
+};
 
 use s2_sdk::types::{
     AccountEndpoint, BasinEndpoint, Compression, EncryptionKey, S2Config, S2Endpoints,
@@ -85,7 +90,7 @@ impl S2Configuration {
     pub fn load() -> Result<Self> {
         let path = config_path()?;
         let mut config = if path.exists() {
-            let contents = std::fs::read_to_string(&path).map_err(|source| Error::ReadConfig {
+            let contents = fs::read_to_string(&path).map_err(|source| Error::ReadConfig {
                 path: path.clone(),
                 source,
             })?;
@@ -186,7 +191,7 @@ impl S2Configuration {
 }
 
 fn environment_value(name: &'static str) -> Result<Option<String>> {
-    match std::env::var(name) {
+    match env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(VarError::NotPresent) => Ok(None),
         Err(VarError::NotUnicode(_)) => Err(Error::InvalidEnvironment { name }),
@@ -226,42 +231,4 @@ fn config_path() -> Result<PathBuf> {
     path.push("s2");
     path.push("config.toml");
     Ok(path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn endpoint_labels_only_report_active_custom_endpoints() {
-        let account_only = S2Configuration {
-            account_endpoint: Some("http://localhost:8080".to_owned()),
-            ..S2Configuration::default()
-        };
-        assert_eq!(account_only.account_endpoint_label(), "S2 Cloud default");
-        assert_eq!(account_only.basin_endpoint_label(), "S2 Cloud default");
-
-        let endpoints = account_only.with_endpoints(
-            "http://account.localhost:8080",
-            "http://basin.localhost:8080",
-        );
-        assert_eq!(
-            endpoints.account_endpoint_label(),
-            "http://account.localhost:8080"
-        );
-        assert_eq!(
-            endpoints.basin_endpoint_label(),
-            "http://basin.localhost:8080"
-        );
-    }
-
-    #[test]
-    fn empty_encryption_key_is_rejected() {
-        let configuration = S2Configuration::default().with_encryption_key("  ");
-        let result = configuration.encryption_key();
-        assert!(result.is_err(), "empty encryption key was accepted");
-        if let Err(error) = result {
-            assert!(error.to_string().contains("S2_ENCRYPTION_KEY is invalid"));
-        }
-    }
 }

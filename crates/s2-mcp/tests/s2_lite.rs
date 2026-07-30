@@ -70,7 +70,7 @@ async fn s2_lite_round_trip_covers_tools_code_mode_and_policy() -> TestResult {
             ),
         }),
     )?;
-    assert_eq!(output["success"], json!(true));
+    assert_eq!(output["success"], json!(true), "{output}");
     assert_eq!(output["output"]["streams"][0]["name"], json!(STREAM));
     Ok(())
 }

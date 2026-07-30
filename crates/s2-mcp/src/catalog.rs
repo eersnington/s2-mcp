@@ -10,10 +10,11 @@ use crate::{
     error::{Error, Result},
     operations::{
         account::{
-            ConnectionInfoInput, ConnectionInfoOutput, DeleteBasinRequest, EnsureBasinOutput,
-            EnsureBasinRequest, GetBasinConfigOutput, GetBasinConfigRequest, GetMetricsRequest,
-            ListBasinsOutput, ListBasinsRequest, MetricsOutput, ReconfigureBasinRequest,
-            RevokeAccessTokenOutput, RevokeAccessTokenRequest,
+            BasinScopedGetMetricsSchema, ConnectionInfoInput, ConnectionInfoOutput,
+            DeleteBasinRequest, EnsureBasinOutput, EnsureBasinRequest, GetBasinConfigOutput,
+            GetBasinConfigRequest, GetMetricsRequest, ListBasinsOutput, ListBasinsRequest,
+            MetricsOutput, ReconfigureBasinRequest, RevokeAccessTokenOutput,
+            RevokeAccessTokenRequest,
         },
         basin::{
             DeleteResourceOutput, DeleteStreamRequest, DiffResourcesOutput, DiffResourcesRequest,
@@ -32,12 +33,110 @@ use crate::{
     policy::{Access, Policy, Scope},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationId {
+    ConnectionInfo,
+    ListBasins,
+    GetBasinConfig,
+    ListStreams,
+    GetStreamConfig,
+    CheckTail,
+    ReadRecords,
+    WaitForRecords,
+    DiffResources,
+    GetMetrics,
+    EnsureBasin,
+    EnsureStream,
+    AppendRecords,
+    ReconfigureBasin,
+    ReconfigureStream,
+    FenceStream,
+    DeleteBasin,
+    DeleteStream,
+    TrimStream,
+    RevokeAccessToken,
+}
+
+impl OperationId {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::ConnectionInfo => "connection_info",
+            Self::ListBasins => "list_basins",
+            Self::GetBasinConfig => "get_basin_config",
+            Self::ListStreams => "list_streams",
+            Self::GetStreamConfig => "get_stream_config",
+            Self::CheckTail => "check_tail",
+            Self::ReadRecords => "read_records",
+            Self::WaitForRecords => "wait_for_records",
+            Self::DiffResources => "diff_resources",
+            Self::GetMetrics => "get_metrics",
+            Self::EnsureBasin => "ensure_basin",
+            Self::EnsureStream => "ensure_stream",
+            Self::AppendRecords => "append_records",
+            Self::ReconfigureBasin => "reconfigure_basin",
+            Self::ReconfigureStream => "reconfigure_stream",
+            Self::FenceStream => "fence_stream",
+            Self::DeleteBasin => "delete_basin",
+            Self::DeleteStream => "delete_stream",
+            Self::TrimStream => "trim_stream",
+            Self::RevokeAccessToken => "revoke_access_token",
+        }
+    }
+
+    pub(crate) const fn access(self) -> Access {
+        match self {
+            Self::ConnectionInfo
+            | Self::ListBasins
+            | Self::GetBasinConfig
+            | Self::ListStreams
+            | Self::GetStreamConfig
+            | Self::CheckTail
+            | Self::ReadRecords
+            | Self::WaitForRecords
+            | Self::DiffResources
+            | Self::GetMetrics => Access::Read,
+            Self::EnsureBasin
+            | Self::EnsureStream
+            | Self::AppendRecords
+            | Self::ReconfigureBasin
+            | Self::ReconfigureStream
+            | Self::FenceStream => Access::Write,
+            Self::DeleteBasin | Self::DeleteStream | Self::TrimStream | Self::RevokeAccessToken => {
+                Access::Destructive
+            }
+        }
+    }
+
+    pub(crate) const fn scope(self) -> Scope {
+        match self {
+            Self::ConnectionInfo => Scope::Global,
+            Self::ListBasins | Self::RevokeAccessToken => Scope::Account,
+            Self::GetBasinConfig
+            | Self::ListStreams
+            | Self::EnsureBasin
+            | Self::ReconfigureBasin
+            | Self::DeleteBasin => Scope::Basin,
+            Self::GetStreamConfig
+            | Self::CheckTail
+            | Self::ReadRecords
+            | Self::WaitForRecords
+            | Self::EnsureStream
+            | Self::AppendRecords
+            | Self::ReconfigureStream
+            | Self::FenceStream
+            | Self::DeleteStream
+            | Self::TrimStream => Scope::Stream,
+            Self::DiffResources | Self::GetMetrics => Scope::Dynamic {
+                applicable_under_basin: true,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Operation {
-    pub(crate) name: &'static str,
+    pub(crate) id: OperationId,
     pub(crate) description: &'static str,
-    pub(crate) access: Access,
-    pub(crate) scope: Scope,
     pub(crate) tool: Tool,
 }
 
@@ -48,155 +147,120 @@ pub(crate) struct Catalog {
 
 impl Catalog {
     pub(crate) fn new(policy: &Policy) -> Result<Self> {
+        let get_metrics = if policy.basin.is_some() {
+            operation::<BasinScopedGetMetricsSchema, MetricsOutput>(
+                OperationId::GetMetrics,
+                "Get bounded account, basin, or stream metrics from S2.",
+                true,
+            )?
+        } else {
+            operation::<GetMetricsRequest, MetricsOutput>(
+                OperationId::GetMetrics,
+                "Get bounded account, basin, or stream metrics from S2.",
+                true,
+            )?
+        };
         let candidates = [
             operation::<ConnectionInfoInput, ConnectionInfoOutput>(
-                "connection_info",
+                OperationId::ConnectionInfo,
                 "Describe the active S2 endpoint and server policy without exposing credentials.",
-                Access::Read,
-                Scope::Global,
                 true,
             )?,
             operation::<ListBasinsRequest, ListBasinsOutput>(
-                "list_basins",
+                OperationId::ListBasins,
                 "List a bounded page of basins in the S2 account.",
-                Access::Read,
-                Scope::Account,
                 true,
             )?,
             operation::<GetBasinConfigRequest, GetBasinConfigOutput>(
-                "get_basin_config",
+                OperationId::GetBasinConfig,
                 "Get the effective configuration of an S2 basin.",
-                Access::Read,
-                Scope::Basin,
                 true,
             )?,
             operation::<ListStreamsRequest, ListStreamsOutput>(
-                "list_streams",
+                OperationId::ListStreams,
                 "List a bounded page of streams in an S2 basin.",
-                Access::Read,
-                Scope::Basin,
                 true,
             )?,
             operation::<GetStreamConfigRequest, GetStreamConfigOutput>(
-                "get_stream_config",
+                OperationId::GetStreamConfig,
                 "Get the effective configuration of an S2 stream.",
-                Access::Read,
-                Scope::Stream,
                 true,
             )?,
             operation::<StreamRequest, PositionOutput>(
-                "check_tail",
+                OperationId::CheckTail,
                 "Get the current tail sequence number and timestamp for an S2 stream.",
-                Access::Read,
-                Scope::Stream,
                 true,
             )?,
             operation::<ReadRecordsRequest, ReadRecordsOutput>(
-                "read_records",
+                OperationId::ReadRecords,
                 "Read a bounded batch of records from an S2 stream without waiting.",
-                Access::Read,
-                Scope::Stream,
                 true,
             )?,
             operation::<WaitForRecordsRequest, WaitForRecordsOutput>(
-                "wait_for_records",
+                OperationId::WaitForRecords,
                 "Wait for and read a bounded batch of records from an S2 stream.",
-                Access::Read,
-                Scope::Stream,
                 true,
             )?,
             operation::<DiffResourcesRequest, DiffResourcesOutput>(
-                "diff_resources",
+                OperationId::DiffResources,
                 "Compare desired basin or stream configurations with their current S2 state.",
-                Access::Read,
-                Scope::Dynamic {
-                    applicable_under_basin: true,
-                },
                 true,
             )?,
-            operation::<GetMetricsRequest, MetricsOutput>(
-                "get_metrics",
-                "Get bounded account, basin, or stream metrics from S2.",
-                Access::Read,
-                Scope::Dynamic {
-                    applicable_under_basin: true,
-                },
-                true,
-            )?,
+            get_metrics,
             operation::<EnsureBasinRequest, EnsureBasinOutput>(
-                "ensure_basin",
+                OperationId::EnsureBasin,
                 "Create an S2 basin or update it to the requested configuration.",
-                Access::Write,
-                Scope::Basin,
                 true,
             )?,
             operation::<EnsureStreamRequest, EnsureStreamOutput>(
-                "ensure_stream",
+                OperationId::EnsureStream,
                 "Create an S2 stream or update it to the requested configuration.",
-                Access::Write,
-                Scope::Stream,
                 true,
             )?,
             operation::<AppendRecordsRequest, AppendRecordsOutput>(
-                "append_records",
+                OperationId::AppendRecords,
                 "Atomically append a bounded batch of records to an S2 stream.",
-                Access::Write,
-                Scope::Stream,
                 false,
             )?,
             operation::<ReconfigureBasinRequest, GetBasinConfigOutput>(
-                "reconfigure_basin",
+                OperationId::ReconfigureBasin,
                 "Apply a partial configuration update to an S2 basin.",
-                Access::Write,
-                Scope::Basin,
                 true,
             )?,
             operation::<ReconfigureStreamRequest, GetStreamConfigOutput>(
-                "reconfigure_stream",
+                OperationId::ReconfigureStream,
                 "Apply a partial configuration update to an S2 stream.",
-                Access::Write,
-                Scope::Stream,
                 true,
             )?,
             operation::<FenceStreamRequest, StreamCommandOutput>(
-                "fence_stream",
+                OperationId::FenceStream,
                 "Set or clear the fencing token on an S2 stream.",
-                Access::Write,
-                Scope::Stream,
                 false,
             )?,
             operation::<DeleteBasinRequest, DeleteResourceOutput>(
-                "delete_basin",
+                OperationId::DeleteBasin,
                 "Delete an S2 basin.",
-                Access::Destructive,
-                Scope::Basin,
                 true,
             )?,
             operation::<DeleteStreamRequest, DeleteResourceOutput>(
-                "delete_stream",
+                OperationId::DeleteStream,
                 "Delete an S2 stream.",
-                Access::Destructive,
-                Scope::Stream,
                 true,
             )?,
             operation::<TrimStreamRequest, StreamCommandOutput>(
-                "trim_stream",
+                OperationId::TrimStream,
                 "Advance the earliest retained sequence number of an S2 stream.",
-                Access::Destructive,
-                Scope::Stream,
                 false,
             )?,
             operation::<RevokeAccessTokenRequest, RevokeAccessTokenOutput>(
-                "revoke_access_token",
+                OperationId::RevokeAccessToken,
                 "Revoke an S2 access token by ID.",
-                Access::Destructive,
-                Scope::Account,
                 true,
             )?,
         ];
         let operations = candidates
             .into_iter()
-            .filter(|operation| policy.allows(operation.access, operation.scope))
+            .filter(|operation| policy.allows(operation.id.access(), operation.id.scope()))
             .collect::<Vec<_>>()
             .into();
         Ok(Self { operations })
@@ -205,7 +269,7 @@ impl Catalog {
     pub(crate) fn find(&self, name: &str) -> Option<&Operation> {
         self.operations
             .iter()
-            .find(|operation| operation.name == name)
+            .find(|operation| operation.id.name() == name)
     }
 
     pub(crate) fn tools(&self) -> Vec<Tool> {
@@ -227,7 +291,7 @@ impl Catalog {
                     .as_deref()
                     .map_or(Value::Bool(true), |schema| Value::Object(schema.clone()));
                 FunctionDescriptor::from_schemas(
-                    operation.name,
+                    operation.id.name(),
                     operation.description,
                     input_schema,
                     output_schema,
@@ -240,10 +304,8 @@ impl Catalog {
 }
 
 fn operation<I, O>(
-    name: &'static str,
+    id: OperationId,
     description: &'static str,
-    access: Access,
-    scope: Scope,
     idempotent: bool,
 ) -> Result<Operation>
 where
@@ -251,18 +313,16 @@ where
     O: JsonSchema + Serialize,
 {
     let annotations = ToolAnnotations::new()
-        .read_only(access == Access::Read)
-        .destructive(access == Access::Destructive)
+        .read_only(id.access() == Access::Read)
+        .destructive(id.access() == Access::Destructive)
         .idempotent(idempotent)
-        .open_world(scope != Scope::Global);
-    let tool = Tool::new(name, description, json_object_schema::<I>()?)
+        .open_world(id.scope() != Scope::Global);
+    let tool = Tool::new(id.name(), description, json_object_schema::<I>()?)
         .with_raw_output_schema(json_object_schema::<O>()?)
         .with_annotations(annotations);
     Ok(Operation {
-        name,
+        id,
         description,
-        access,
-        scope,
         tool,
     })
 }

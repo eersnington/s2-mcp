@@ -29,7 +29,6 @@ const DEFAULT_RETENTION_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 impl Operations {
     pub(super) async fn list_streams(&self, arguments: Value) -> Result<Value> {
         let request: ListStreamsRequest = parse(arguments)?;
-        self.policy.enforce_operation(Access::Read, Scope::Basin)?;
         self.policy.enforce_basin(&request.basin)?;
         let limit = bounded(
             request.limit.unwrap_or(MAX_LIST_LIMIT),
@@ -62,7 +61,6 @@ impl Operations {
 
     pub(crate) async fn get_stream_config(&self, arguments: Value) -> Result<Value> {
         let request: GetStreamConfigRequest = parse(arguments)?;
-        self.policy.enforce_operation(Access::Read, Scope::Stream)?;
         self.policy.enforce_basin(&request.basin)?;
         let basin = self.s2.basin(request.basin.parse()?);
         let config = basin.get_stream_config(request.stream.parse()?).await?;
@@ -75,8 +73,6 @@ impl Operations {
 
     pub(crate) async fn ensure_stream(&self, arguments: Value) -> Result<Value> {
         let request: EnsureStreamRequest = parse(arguments)?;
-        self.policy
-            .enforce_operation(Access::Write, Scope::Stream)?;
         self.policy.enforce_basin(&request.basin)?;
         let basin = self.s2.basin(request.basin.parse()?);
         let mut input = EnsureStreamInput::new(request.stream.parse()?);
@@ -97,8 +93,6 @@ impl Operations {
 
     pub(crate) async fn reconfigure_stream(&self, arguments: Value) -> Result<Value> {
         let request: ReconfigureStreamRequest = parse(arguments)?;
-        self.policy
-            .enforce_operation(Access::Write, Scope::Stream)?;
         self.policy.enforce_basin(&request.basin)?;
         if request.config.is_empty() {
             return Err(Error::InvalidArguments(
@@ -118,8 +112,6 @@ impl Operations {
 
     pub(crate) async fn delete_stream(&self, arguments: Value) -> Result<Value> {
         let request: DeleteStreamRequest = parse(arguments)?;
-        self.policy
-            .enforce_operation(Access::Destructive, Scope::Stream)?;
         self.policy.enforce_basin(&request.basin)?;
         let basin = self.s2.basin(request.basin.parse()?);
         let input = DeleteStreamInput::new(request.stream.parse()?)
@@ -130,12 +122,6 @@ impl Operations {
 
     pub(crate) async fn diff_resources(&self, arguments: Value) -> Result<Value> {
         let request: DiffResourcesRequest = parse(arguments)?;
-        self.policy.enforce_operation(
-            Access::Read,
-            Scope::Dynamic {
-                applicable_under_basin: true,
-            },
-        )?;
         bounded(
             request.resources.len(),
             MAX_DIFF_RESOURCES,

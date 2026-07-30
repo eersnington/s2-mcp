@@ -16,12 +16,12 @@ use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use crate::{
-    catalog::{Catalog, json_object_schema},
+    catalog::json_object_schema,
     config::S2Configuration,
     error::{Error, Result},
     executor::execute_in_subprocess,
     mode::ServerMode,
-    operations::SharedOperationHandler,
+    operation_surface::OperationSurface,
     policy::Policy,
     tool_mode::ToolMode,
 };
@@ -50,21 +50,19 @@ const MAX_CONCURRENT_EXECUTORS: usize = 4;
 
 impl S2McpServer {
     pub(crate) fn new(
-        catalog: Catalog,
+        operation_surface: OperationSurface,
         connection: S2Configuration,
-        handler: SharedOperationHandler,
         options: &ServerOptions,
     ) -> Result<Self> {
+        let policy = operation_surface.policy().clone();
         let surface = match options.mode {
-            ServerMode::Code => Surface::Code(catalog.code_mode()?),
-            ServerMode::Tools => {
-                Surface::Tools(ToolMode::new(catalog, handler, options.policy.clone()))
-            }
+            ServerMode::Code => Surface::Code(operation_surface.code_mode()?),
+            ServerMode::Tools => Surface::Tools(ToolMode::new(Arc::new(operation_surface))),
         };
         Ok(Self {
             connection,
             executor_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
-            policy: options.policy.clone(),
+            policy,
             surface,
         })
     }

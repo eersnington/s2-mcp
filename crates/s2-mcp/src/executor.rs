@@ -1,9 +1,4 @@
-use std::{
-    env,
-    io::{self, Write},
-    process::Stdio,
-    sync::Arc,
-};
+use std::{env, io, process::Stdio};
 
 use s2_mcp_codemode::{ExecuteInput, ExecuteOutput, InvokeError, Invoker, Limits};
 use serde::{Deserialize, Serialize};
@@ -14,10 +9,9 @@ use tokio::{
 };
 
 use crate::{
-    catalog::Catalog,
     config::ConnectionConfig,
     error::{Error, Result},
-    operations::{Operations, dispatch},
+    operation_surface::OperationSurface,
     policy::Policy,
 };
 
@@ -54,12 +48,12 @@ pub(crate) async fn execute_in_subprocess(
         connection: connection.clone(),
         policy: policy.clone(),
     };
-    if serialized_size(&request)? > MAX_CHILD_REQUEST_BYTES {
+    let request = serde_json::to_vec(&request)?;
+    if request.len() > MAX_CHILD_REQUEST_BYTES {
         return Err(Error::ExecutorRequestTooLarge {
             maximum: MAX_CHILD_REQUEST_BYTES,
         });
     }
-    let request = serde_json::to_vec(&request)?;
 
     let executable = env::current_exe().map_err(Error::StartExecutor)?;
     let mut child = Command::new(executable)
@@ -129,16 +123,14 @@ async fn execute_child_request() -> Result<ExecuteOutput> {
         connection,
         policy,
     } = serde_json::from_slice(&encoded)?;
-    let handler = Arc::new(Operations::new(connection, policy.clone())?);
-    let catalog = Catalog::new(&policy)?;
-    let code_mode = catalog.code_mode()?;
+    let surface = OperationSurface::new(connection, policy)?;
+    let code_mode = surface.code_mode()?;
     let invoker = Invoker::new(move |operation, arguments| {
-        let handler = handler.clone();
-        let catalog = catalog.clone();
-        let policy = policy.clone();
+        let surface = surface.clone();
         async move {
             let arguments = arguments.unwrap_or_else(empty_object);
-            dispatch(&handler, &catalog, &policy, &operation, arguments)
+            surface
+                .dispatch(&operation, arguments)
                 .await
                 .map_err(map_invoke_error)
         }
@@ -160,26 +152,4 @@ fn map_invoke_error(error: Error) -> InvokeError {
 
 fn empty_object() -> Value {
     Value::Object(Default::default())
-}
-
-fn serialized_size<T: Serialize + ?Sized>(value: &T) -> Result<usize> {
-    let mut counter = ByteCounter::default();
-    serde_json::to_writer(&mut counter, value)?;
-    Ok(counter.bytes)
-}
-
-#[derive(Default)]
-struct ByteCounter {
-    bytes: usize,
-}
-
-impl Write for ByteCounter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.bytes = self.bytes.saturating_add(buffer.len());
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
