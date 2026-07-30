@@ -5,6 +5,7 @@
   const MAX_PENDING_TIMERS = 64;
   const MAX_TIMER_DELAY_MS = 30 * 1000;
   const globalObject = globalThis;
+  const extractArguments = Deno.core.ops.op_codemode_extract_arguments;
   const invokeOperation = Deno.core.ops.op_codemode_invoke;
   const queueUserTimer = Deno.core.queueUserTimer;
   const cancelTimer = Deno.core.cancelTimer;
@@ -102,7 +103,7 @@
       const namespace = Object.create(null);
       for (const [name, operation] of Object.entries(descriptors)) {
         Object.defineProperty(namespace, name, {
-          value: async (input = {}) => await invokeOperation(operation, input),
+          value: async (input = {}) => await invokeOperation(operation, extractArguments(input)),
           configurable: false,
           enumerable: true,
           writable: false,

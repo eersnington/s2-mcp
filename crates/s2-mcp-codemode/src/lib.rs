@@ -3,6 +3,7 @@ mod schema;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     future::Future,
     io::{self, Write},
     mem,
@@ -152,8 +153,8 @@ impl Invoker {
     }
 }
 
-impl std::fmt::Debug for Invoker {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Invoker {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("Invoker").finish_non_exhaustive()
     }
 }
@@ -357,6 +358,8 @@ impl CodeMode {
                 Error::ExecutionTimeout {
                     seconds: limits.execution_timeout.as_secs(),
                 }
+            } else if let Some(maximum) = error.json_depth_maximum() {
+                Error::JsonDepthExceeded { maximum }
             } else {
                 Error::Runtime(error.to_string())
             }

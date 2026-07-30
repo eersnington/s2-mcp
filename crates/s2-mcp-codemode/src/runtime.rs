@@ -130,6 +130,21 @@ struct SequencedCall {
     call: CallTrace,
 }
 
+#[op2]
+#[serde]
+fn op_codemode_extract_arguments<'s>(
+    state: Rc<RefCell<OpState>>,
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let maximum_depth = state
+        .borrow()
+        .borrow::<RuntimeInvoker>()
+        .limits
+        .max_json_depth;
+    extract_json(scope, value, maximum_depth).map_err(extract_error)
+}
+
 #[op2(async)]
 #[serde]
 async fn op_codemode_invoke(
@@ -209,6 +224,15 @@ async fn op_codemode_invoke(
     result.map_err(|error| JsErrorBox::generic(error.message().to_owned()))
 }
 
+fn extract_error(error: JsonExtractError) -> JsErrorBox {
+    match error {
+        JsonExtractError::Depth { maximum } => {
+            public_error(PublicError::JsonDepthExceeded { maximum })
+        }
+        JsonExtractError::NotSerializable => JsErrorBox::generic("value is not JSON-serializable"),
+    }
+}
+
 fn public_error(error: PublicError) -> JsErrorBox {
     JsErrorBox::generic(error.to_string())
 }
@@ -219,7 +243,7 @@ fn runtime_error(_error: RuntimeError) -> JsErrorBox {
 
 deno_core::extension!(
     codemode_runtime,
-    ops = [op_codemode_invoke],
+    ops = [op_codemode_extract_arguments, op_codemode_invoke],
     options = { invoker: RuntimeInvoker },
     state = |state, options| state.put(options.invoker),
 );
@@ -242,6 +266,8 @@ pub(crate) enum RuntimeError {
     Bootstrap(String),
     #[error("JavaScript runtime capture failed: {0}")]
     Capture(String),
+    #[error("JSON value exceeds the maximum depth of {maximum}")]
+    JsonDepthExceeded { maximum: usize },
     #[error("callback trace is unavailable")]
     Trace,
     #[error("JavaScript execution timed out")]
@@ -251,6 +277,13 @@ pub(crate) enum RuntimeError {
 impl RuntimeError {
     pub(crate) const fn is_timeout(&self) -> bool {
         matches!(self, Self::Timeout)
+    }
+
+    pub(crate) const fn json_depth_maximum(&self) -> Option<usize> {
+        match self {
+            Self::JsonDepthExceeded { maximum } => Some(*maximum),
+            _ => None,
+        }
     }
 }
 
@@ -366,7 +399,7 @@ pub(crate) async fn execute(
         .or(event_loop_error.as_ref())
         .map(core_error_message);
     let output = if runtime_error.is_none() {
-        extract_output(&mut runtime, module_id)?
+        extract_output(&mut runtime, module_id, limits.max_json_depth)?
     } else {
         None
     };
@@ -398,6 +431,7 @@ fn finish(
 fn extract_output(
     runtime: &mut JsRuntime,
     module_id: usize,
+    maximum_depth: usize,
 ) -> Result<Option<Value>, RuntimeError> {
     let namespace = runtime
         .get_module_namespace(module_id)
@@ -413,16 +447,156 @@ fn extract_output(
     if default_value.is_undefined() {
         return Ok(None);
     }
-    let value = if default_value.is_promise() {
-        let promise = default_value.cast::<v8::Promise>();
-        if promise.state() != v8::PromiseState::Fulfilled {
-            return Ok(None);
+    match extract_json(scope, default_value, maximum_depth) {
+        Ok(value) => Ok(Some(value)),
+        Err(JsonExtractError::Depth { maximum }) => {
+            Err(RuntimeError::JsonDepthExceeded { maximum })
         }
-        promise.result(scope)
+        Err(JsonExtractError::NotSerializable) => Ok(None),
+    }
+}
+
+#[derive(Debug)]
+enum JsonExtractError {
+    Depth { maximum: usize },
+    NotSerializable,
+}
+
+fn extract_json<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+    maximum_depth: usize,
+) -> Result<Value, JsonExtractError> {
+    inspect_json_depth(scope, value, 0, maximum_depth, &mut Vec::new())?;
+    deno_core::serde_v8::from_v8(scope, value).map_err(|_| JsonExtractError::NotSerializable)
+}
+
+fn inspect_json_depth<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+    parent_depth: usize,
+    maximum_depth: usize,
+    ancestors: &mut Vec<v8::Local<'s, v8::Object>>,
+) -> Result<(), JsonExtractError> {
+    if !value.is_array() && !value.is_object() {
+        return Ok(());
+    }
+    if value.is_proxy() {
+        return Err(JsonExtractError::NotSerializable);
+    }
+    let depth = parent_depth.saturating_add(1);
+    if depth > maximum_depth {
+        return Err(JsonExtractError::Depth {
+            maximum: maximum_depth,
+        });
+    }
+    let object = value
+        .to_object(scope)
+        .ok_or(JsonExtractError::NotSerializable)?;
+    if ancestors
+        .iter()
+        .any(|ancestor| ancestor.strict_equals(object.into()))
+    {
+        return Err(JsonExtractError::NotSerializable);
+    }
+    ancestors.push(object);
+    let result = if value.is_array() {
+        inspect_array_items(scope, object, depth, maximum_depth, ancestors)
     } else {
-        default_value
+        inspect_object_properties(scope, object, depth, maximum_depth, ancestors)
     };
-    Ok(deno_core::serde_v8::from_v8(scope, value).ok())
+    ancestors.pop();
+    result
+}
+
+fn inspect_array_items<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    depth: usize,
+    maximum_depth: usize,
+    ancestors: &mut Vec<v8::Local<'s, v8::Object>>,
+) -> Result<(), JsonExtractError> {
+    let array =
+        v8::Local::<v8::Array>::try_from(object).map_err(|_| JsonExtractError::NotSerializable)?;
+    let keys = own_property_names(scope, object)?;
+    let value_key = v8::String::new(scope, "value").ok_or(JsonExtractError::NotSerializable)?;
+    let mut item_count = 0;
+    for index in 0..keys.length() {
+        let key = keys
+            .get_index(scope, index)
+            .ok_or(JsonExtractError::NotSerializable)?;
+        let key_text = key.to_rust_string_lossy(scope);
+        let Ok(item_index) = key_text.parse::<u32>() else {
+            continue;
+        };
+        if item_index.to_string() != key_text || item_index >= array.length() {
+            continue;
+        }
+        let name =
+            v8::Local::<v8::Name>::try_from(key).map_err(|_| JsonExtractError::NotSerializable)?;
+        let child = data_property_value(scope, object, name, value_key)?;
+        inspect_json_depth(scope, child, depth, maximum_depth, ancestors)?;
+        item_count += 1;
+    }
+    if item_count != array.length() {
+        return Err(JsonExtractError::NotSerializable);
+    }
+    Ok(())
+}
+
+fn inspect_object_properties<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    depth: usize,
+    maximum_depth: usize,
+    ancestors: &mut Vec<v8::Local<'s, v8::Object>>,
+) -> Result<(), JsonExtractError> {
+    let keys = own_property_names(scope, object)?;
+    let value_key = v8::String::new(scope, "value").ok_or(JsonExtractError::NotSerializable)?;
+    for index in 0..keys.length() {
+        let key = keys
+            .get_index(scope, index)
+            .ok_or(JsonExtractError::NotSerializable)?;
+        let name =
+            v8::Local::<v8::Name>::try_from(key).map_err(|_| JsonExtractError::NotSerializable)?;
+        let child = data_property_value(scope, object, name, value_key)?;
+        inspect_json_depth(scope, child, depth, maximum_depth, ancestors)?;
+    }
+    Ok(())
+}
+
+fn own_property_names<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+) -> Result<v8::Local<'s, v8::Array>, JsonExtractError> {
+    object
+        .get_own_property_names(
+            scope,
+            v8::GetPropertyNamesArgs {
+                mode: v8::KeyCollectionMode::OwnOnly,
+                key_conversion: v8::KeyConversionMode::ConvertToString,
+                ..Default::default()
+            },
+        )
+        .ok_or(JsonExtractError::NotSerializable)
+}
+
+fn data_property_value<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    name: v8::Local<'s, v8::Name>,
+    value_key: v8::Local<'s, v8::String>,
+) -> Result<v8::Local<'s, v8::Value>, JsonExtractError> {
+    let descriptor = object
+        .get_own_property_descriptor(scope, name)
+        .and_then(|descriptor| descriptor.to_object(scope))
+        .ok_or(JsonExtractError::NotSerializable)?;
+    if descriptor.has_own_property(scope, value_key.into()) != Some(true) {
+        return Err(JsonExtractError::NotSerializable);
+    }
+    descriptor
+        .get(scope, value_key.into())
+        .ok_or(JsonExtractError::NotSerializable)
 }
 
 #[derive(Deserialize)]
