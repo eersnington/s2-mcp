@@ -288,6 +288,7 @@ impl<'a> SchemaRenderer<'a> {
     }
 
     fn render_object_type(&mut self, schema: &Map<String, Value>) -> Result<String> {
+        let properties = schema.get("properties").and_then(Value::as_object);
         let required = schema
             .get("required")
             .and_then(Value::as_array)
@@ -298,7 +299,24 @@ impl<'a> SchemaRenderer<'a> {
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        let properties = schema.get("properties").and_then(Value::as_object);
+        if let Some(name) = required
+            .iter()
+            .find(|name| properties.is_none_or(|properties| !properties.contains_key(**name)))
+        {
+            return Err(Error::InvalidDescriptor(format!(
+                "operation JSON Schema requires property `{name}`, but it is absent from `properties`"
+            )));
+        }
+        if properties.is_some_and(|properties| !properties.is_empty())
+            && schema
+                .get("additionalProperties")
+                .is_some_and(Value::is_object)
+        {
+            return Err(Error::InvalidDescriptor(
+                "operation JSON Schema cannot combine declared properties with typed `additionalProperties`"
+                    .to_owned(),
+            ));
+        }
         let mut fields = Vec::new();
         if let Some(properties) = properties {
             for (name, property_schema) in properties {
