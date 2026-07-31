@@ -1,6 +1,6 @@
 [package]
 name = "s2-mcp"
-version = "0.1.0"
+version = "0.0.2"
 description = "Model Context Protocol server for S2"
 edition.workspace = true
 license.workspace = true
