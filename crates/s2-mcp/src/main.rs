@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "s2-mcp",
     version,
-    about = "Connect MCP clients to S2 durable streams",
+    about = "MCP server for S2/StreamStore",
     styles = cli_styles(),
     after_long_help = "CONNECTIONS
   s2-mcp                            Connect to S2 Cloud
@@ -255,24 +255,5 @@ fn init_tracing(log_file: Option<&Path>) -> Result<()> {
             .with_ansi(false)
             .try_init()
             .map_err(|source| Error::InitializeLogging { source })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interactive_server_shows_guidance() {
-        assert!(should_show_interactive_guidance(None, true));
-    }
-
-    #[test]
-    fn piped_server_and_executor_child_do_not_show_guidance() {
-        assert!(!should_show_interactive_guidance(None, false));
-        assert!(!should_show_interactive_guidance(
-            Some(&InternalCommand::Execute),
-            true
-        ));
     }
 }

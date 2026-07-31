@@ -26,7 +26,7 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
     #[error(
-        "Could not start S2 Lite. Start Docker, provide --endpoint URL, or use --from-env. Details: {source}"
+        "Could not start S2 Lite. Start Docker or OrbStack, set DOCKER_HOST if the socket is non-default, provide --endpoint URL, or use --from-env. Details: {source}"
     )]
     StartManagedLite { source: s2_testcontainers::Error },
     #[error("invalid tool arguments: {0}")]
