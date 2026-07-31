@@ -35,6 +35,46 @@ fn modes_expose_the_expected_tools() -> TestResult {
 }
 
 #[test]
+fn managed_development_defers_container_start_until_code_execution() -> TestResult {
+    let mut session = Session::start_with_docker_host(
+        &["--dev", "--mode", "code"],
+        "unix:///definitely-missing-s2-mcp-testcontainers.sock",
+    )?;
+    assert_eq!(session.tool_names()?, ["execute", "search"]);
+
+    let search = session.call_tool("search", json!({ "query": "connection" }))?;
+    assert_eq!(search["matches"][0]["name"], json!("S2.connectionInfo"));
+
+    let output = session.call_tool(
+        "execute",
+        json!({ "code": "async function run() { return await S2.connectionInfo({}); }" }),
+    )?;
+    assert!(
+        output["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Could not start S2 Lite"))
+    );
+    Ok(())
+}
+
+#[test]
+fn managed_development_defers_container_start_until_tools_call() -> TestResult {
+    let mut session = Session::start_with_docker_host(
+        &["--dev", "--mode", "tools"],
+        "unix:///definitely-missing-s2-mcp-testcontainers.sock",
+    )?;
+    assert_eq!(session.tool_names()?.len(), 16);
+
+    let output = session.call_tool("connection_info", json!({}))?;
+    assert!(
+        output["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Could not start S2 Lite"))
+    );
+    Ok(())
+}
+
+#[test]
 fn code_mode_executes_an_isolated_s2_callback() -> TestResult {
     let mut session = Session::start(&["--mode", "code", "--readonly"])?;
     let output = session.call_tool(
@@ -85,6 +125,22 @@ fn development_flags_enforce_an_explicit_boundary() -> TestResult {
         .output()?;
     assert!(!conflicting_sources.status.success());
     assert!(String::from_utf8_lossy(&conflicting_sources.stderr).contains("cannot be used with"));
+    Ok(())
+}
+
+#[test]
+fn help_describes_connection_modes_in_user_facing_language() -> TestResult {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("s2-mcp"))
+        .arg("--help")
+        .output()?;
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("MCP server for S2 durable streams"));
+    assert!(help.contains("Start a temporary S2 Lite container when needed"));
+    assert!(help.contains("Use an existing S2 development server"));
+    assert!(help.contains("Read endpoints from environment variables"));
+    assert!(help.contains("Running it directly in a terminal shows this help."));
+    assert!(!help.contains("Start S2 Lite on first use"));
     Ok(())
 }
 
@@ -172,7 +228,19 @@ struct Session {
 
 impl Session {
     fn start(arguments: &[&str]) -> TestResult<Self> {
-        let mut child = Command::new(assert_cmd::cargo::cargo_bin!("s2-mcp"))
+        Self::start_with_optional_docker_host(arguments, None)
+    }
+
+    fn start_with_docker_host(arguments: &[&str], docker_host: &str) -> TestResult<Self> {
+        Self::start_with_optional_docker_host(arguments, Some(docker_host))
+    }
+
+    fn start_with_optional_docker_host(
+        arguments: &[&str],
+        docker_host: Option<&str>,
+    ) -> TestResult<Self> {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("s2-mcp"));
+        command
             .args(arguments)
             .env("S2_ACCESS_TOKEN", "test-token")
             .env("S2_ACCOUNT_ENDPOINT", "http://127.0.0.1:1")
@@ -183,8 +251,11 @@ impl Session {
             .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        if let Some(docker_host) = docker_host {
+            command.env("DOCKER_HOST", docker_host);
+        }
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take().ok_or("server stdin was unavailable")?;
         let stdout = child.stdout.take().ok_or("server stdout was unavailable")?;
         let mut session = Self {

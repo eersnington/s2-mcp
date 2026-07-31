@@ -9,21 +9,21 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use s2_mcp_codemode::{
-    CodeMode, ExecuteInput, ExecuteOutput, Limits, SearchInput, SearchOutput, validate_json_depth,
+    ExecuteInput, ExecuteOutput, Limits, SearchInput, SearchOutput, validate_json_depth,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use crate::{
-    catalog::json_object_schema,
+    catalog::{Catalog, OperationId, json_object_schema},
     config::S2Configuration,
     error::{Error, Result},
     executor::execute_in_subprocess,
+    launch::ResolvedRuntime,
     mode::ServerMode,
-    operation_surface::OperationSurface,
+    operations::Operations,
     policy::Policy,
-    tool_mode::ToolMode,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -33,48 +33,46 @@ pub struct ServerOptions {
 }
 
 #[derive(Clone)]
-enum Surface {
-    Code(CodeMode),
-    Tools(ToolMode),
-}
-
-#[derive(Clone)]
 pub struct S2McpServer {
-    connection: S2Configuration,
-    executor_permits: Arc<Semaphore>,
+    runtime: Arc<ResolvedRuntime>,
+    catalog: Catalog,
     policy: Policy,
-    surface: Surface,
+    executor_permits: Arc<Semaphore>,
+    surface_mode: ServerMode,
 }
 
 const MAX_CONCURRENT_EXECUTORS: usize = 4;
 
 impl S2McpServer {
-    pub(crate) fn new(
-        operation_surface: OperationSurface,
-        connection: S2Configuration,
-        options: &ServerOptions,
-    ) -> Result<Self> {
-        let policy = operation_surface.policy().clone();
-        let surface = match options.mode {
-            ServerMode::Code => Surface::Code(operation_surface.code_mode()?),
-            ServerMode::Tools => Surface::Tools(ToolMode::new(Arc::new(operation_surface))),
-        };
+    pub(crate) fn new(runtime: Arc<ResolvedRuntime>, options: &ServerOptions) -> Result<Self> {
+        let policy = options.policy.clone();
+        let catalog = Catalog::new(&policy)?;
         Ok(Self {
-            connection,
-            executor_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
+            runtime,
+            catalog,
             policy,
-            surface,
+            executor_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
+            surface_mode: options.mode,
         })
     }
 
+    async fn resolve_operations(&self) -> Result<Operations> {
+        let connection = self.runtime.configuration().await?;
+        Operations::new(connection.clone(), Arc::new(self.policy.clone()))
+    }
+
     fn tools(&self) -> Result<Vec<Tool>> {
-        match &self.surface {
-            Surface::Code(_) => {
+        match self.surface_mode {
+            ServerMode::Code => {
                 let mut tools = vec![self.search_tool()?, self.execute_tool()?];
                 tools.sort_by(|left, right| left.name.cmp(&right.name));
                 Ok(tools)
             }
-            Surface::Tools(tool_mode) => Ok(tool_mode.tools()),
+            ServerMode::Tools => {
+                let mut tools = self.catalog.tools();
+                tools.sort_by(|left, right| left.name.cmp(&right.name));
+                Ok(tools)
+            }
         }
     }
 
@@ -110,46 +108,52 @@ impl S2McpServer {
         ))
     }
 
-    async fn call_code_tool(&self, name: &str, arguments: Value) -> Result<Value> {
+    fn call_search(&self, arguments: Value) -> Result<Value> {
         validate_json_depth(&arguments, Limits::default().max_json_depth)
             .map_err(|error| Error::CodeMode(error.to_string()))?;
-        let Surface::Code(code_catalog) = &self.surface else {
-            return Err(Error::Forbidden);
-        };
-        match name {
-            "search" => {
-                let input = decode(arguments)?;
-                let output = code_catalog
-                    .search(input)
-                    .map_err(|error| Error::CodeMode(error.to_string()))?;
-                Ok(serde_json::to_value(output)?)
-            }
-            "execute" => {
-                let input = decode(arguments)?;
-                let _permit = self
-                    .executor_permits
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|error| {
-                        Error::CodeMode(format!("executor concurrency limiter closed: {error}"))
-                    })?;
-                Ok(serde_json::to_value(
-                    execute_in_subprocess(input, &self.connection, &self.policy).await?,
-                )?)
-            }
-            _ => Err(Error::Forbidden),
-        }
+        let input = decode(arguments)?;
+        Ok(serde_json::to_value(self.catalog.search(input)?)?)
+    }
+
+    fn prepare_execute(&self, arguments: Value) -> Result<ExecuteInput> {
+        validate_json_depth(&arguments, Limits::default().max_json_depth)
+            .map_err(|error| Error::CodeMode(error.to_string()))?;
+        decode(arguments)
+    }
+
+    fn prepare_tool(&self, name: &str, arguments: Value) -> Result<(OperationId, Value)> {
+        validate_json_depth(&arguments, Limits::default().max_json_depth)
+            .map_err(|error| Error::CodeMode(error.to_string()))?;
+        let operation_id = self.catalog.find(name).ok_or(Error::Forbidden)?.id;
+        Ok((operation_id, arguments))
+    }
+
+    async fn execute_code(
+        &self,
+        input: ExecuteInput,
+        connection: &S2Configuration,
+    ) -> Result<Value> {
+        let _permit = self
+            .executor_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| {
+                Error::CodeMode(format!("executor concurrency limiter closed: {error}"))
+            })?;
+        Ok(serde_json::to_value(
+            execute_in_subprocess(input, connection, &self.policy).await?,
+        )?)
     }
 }
 
 impl ServerHandler for S2McpServer {
     fn get_info(&self) -> ServerInfo {
-        let instructions = match self.surface {
-            Surface::Code(_) => {
+        let instructions = match self.surface_mode {
+            ServerMode::Code => {
                 "Call search to discover typed S2 functions, then execute one bounded TypeScript program."
             }
-            Surface::Tools(_) => {
+            ServerMode::Tools => {
                 "Use the advertised S2 tools directly. Reads and waits are bounded."
             }
         };
@@ -173,12 +177,15 @@ impl ServerHandler for S2McpServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        match &self.surface {
-            Surface::Code(_) => self
+        match self.surface_mode {
+            ServerMode::Code => self
                 .tools()
                 .ok()
                 .and_then(|tools| tools.into_iter().find(|tool| tool.name == name)),
-            Surface::Tools(tool_mode) => tool_mode.get_tool(name),
+            ServerMode::Tools => self
+                .catalog
+                .find(name)
+                .map(|operation| operation.tool.clone()),
         }
     }
 
@@ -192,21 +199,36 @@ impl ServerHandler for S2McpServer {
             return Err(McpError::invalid_params("tool not found", None));
         }
         let arguments = Value::Object(request.arguments.unwrap_or_default());
-        let result = match &self.surface {
-            Surface::Code(_) => {
-                tokio::select! {
-                    biased;
-                    _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
-                    result = self.call_code_tool(&name, arguments) => result,
-                }
-            }
-            Surface::Tools(tool_mode) => {
-                tokio::select! {
-                    biased;
-                    _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
-                    result = tool_mode.dispatch(&name, arguments) => result,
-                }
-            }
+        let result = match (self.surface_mode, name.as_str()) {
+            (ServerMode::Code, "search") => self.call_search(arguments),
+            (ServerMode::Code, "execute") => match self.prepare_execute(arguments) {
+                Err(error) => Err(error),
+                Ok(input) => match self.runtime.configuration().await {
+                    Err(error) => Err(error),
+                    Ok(connection) => {
+                        let connection = connection.clone();
+                        tokio::select! {
+                            biased;
+                            _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
+                            result = self.execute_code(input, &connection) => result,
+                        }
+                    }
+                },
+            },
+            (ServerMode::Tools, _) => match self.prepare_tool(&name, arguments) {
+                Err(error) => Err(error),
+                Ok((operation_id, arguments)) => match self.resolve_operations().await {
+                    Err(error) => Err(error),
+                    Ok(operations) => {
+                        tokio::select! {
+                            biased;
+                            _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
+                            result = operations.dispatch(operation_id, arguments) => result,
+                        }
+                    }
+                },
+            },
+            _ => Err(Error::Forbidden),
         };
         Ok(match result {
             Ok(value) => CallToolResult::structured(value).into(),

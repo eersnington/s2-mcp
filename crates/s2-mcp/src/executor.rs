@@ -1,4 +1,4 @@
-use std::{env, io, process::Stdio};
+use std::{env, io, process::Stdio, sync::Arc};
 
 use s2_mcp_codemode::{ExecuteInput, ExecuteOutput, InvokeError, Invoker, Limits};
 use serde::{Deserialize, Serialize};
@@ -9,9 +9,10 @@ use tokio::{
 };
 
 use crate::{
+    catalog::Catalog,
     config::ConnectionConfig,
     error::{Error, Result},
-    operation_surface::OperationSurface,
+    operations::Operations,
     policy::Policy,
 };
 
@@ -123,16 +124,20 @@ async fn execute_child_request() -> Result<ExecuteOutput> {
         connection,
         policy,
     } = serde_json::from_slice(&encoded)?;
-    let surface = OperationSurface::new(connection, policy)?;
-    let code_mode = surface.code_mode()?;
+    let catalog = Catalog::new(&policy)?;
+    let code_mode = catalog.code_mode();
+    let operations = Operations::new(connection, Arc::new(policy))?;
     let invoker = Invoker::new(move |operation, arguments| {
-        let surface = surface.clone();
+        let catalog = catalog.clone();
+        let operations = operations.clone();
         async move {
-            let arguments = arguments.unwrap_or_else(empty_object);
-            surface
-                .dispatch(&operation, arguments)
-                .await
-                .map_err(map_invoke_error)
+            let result = async {
+                let operation_id = catalog.find(&operation).ok_or(Error::Forbidden)?.id;
+                let arguments = arguments.unwrap_or_else(empty_object);
+                operations.dispatch(operation_id, arguments).await
+            }
+            .await;
+            result.map_err(map_invoke_error)
         }
     });
     code_mode

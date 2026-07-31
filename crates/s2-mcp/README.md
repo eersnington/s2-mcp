@@ -16,7 +16,7 @@ S2_BASIN_ENDPOINT=http://basin.internal:8081 \
 s2-mcp --dev --from-env
 ```
 
-Managed development starts an ephemeral S2 Lite container through Testcontainers and requires Docker or another compatible runtime. `--endpoint` uses one server for both APIs. `--from-env` requires both endpoint variables and never falls back to Cloud. `S2_ACCESS_TOKEN` supplies a development token when the endpoint requires one.
+Managed development starts a temporary S2 Lite container through Testcontainers when needed, then keeps it for the MCP process lifetime. Docker or another compatible runtime is required. `--endpoint` uses one server for both APIs. `--from-env` requires both endpoint variables and never falls back to Cloud. `S2_ACCESS_TOKEN` supplies a development token when the endpoint requires one.
 
 `S2_ENCRYPTION_KEY`, `S2_COMPRESSION`, and `S2_SSL_NO_VERIFY` configure Cloud connections. `S2_COMPRESSION` accepts `none`, `gzip`, or `zstd`.
 

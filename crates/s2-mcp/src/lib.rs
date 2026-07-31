@@ -1,27 +1,29 @@
+use std::sync::Arc;
+
 mod catalog;
 mod config;
 mod error;
 mod executor;
 mod launch;
 mod mode;
-mod operation_surface;
 mod operations;
 mod policy;
 mod server;
-mod tool_mode;
 
 pub use config::{S2Compression, S2Configuration};
 pub use error::{Error, Result};
 pub use launch::{DevSource, LaunchIntent, ResolvedRuntime};
 pub use mode::ServerMode;
-use operation_surface::OperationSurface;
 pub use policy::Policy;
 use rmcp::{ServiceExt, transport::stdio};
 pub use server::{S2McpServer, ServerOptions};
 
 pub async fn serve(options: ServerOptions, configuration: S2Configuration) -> Result<()> {
-    let surface = OperationSurface::new(configuration.clone(), options.policy.clone())?;
-    let server = S2McpServer::new(surface, configuration, &options)?;
+    serve_runtime(options, ResolvedRuntime::from_configuration(configuration)).await
+}
+
+pub async fn serve_runtime(options: ServerOptions, runtime: ResolvedRuntime) -> Result<()> {
+    let server = S2McpServer::new(Arc::new(runtime), &options)?;
     let service = server
         .serve(stdio())
         .await

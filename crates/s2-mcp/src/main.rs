@@ -18,34 +18,34 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "s2-mcp",
     version,
-    about = "MCP server for S2/StreamStore",
+    about = "MCP server for S2 durable streams",
     styles = cli_styles(),
     after_long_help = "CONNECTIONS
   s2-mcp                            Connect to S2 Cloud
-  s2-mcp --dev                      Start an ephemeral S2 Lite container
-  s2-mcp --dev --endpoint <URL>     Connect to an existing development server
-  s2-mcp --dev --from-env           Read development endpoints from the environment
+  s2-mcp --dev                      Start a temporary S2 Lite container when needed
+  s2-mcp --dev --endpoint <URL>     Use an existing S2 development server
+  s2-mcp --dev --from-env           Read endpoints from environment variables
 
 MCP CLIENT CONFIGURATION
   Cloud:       command = \"s2-mcp\"
   Development: command = \"s2-mcp\", args = [\"--dev\"]
 
-Run this command through an MCP client. Interactive execution displays this help."
+Use this command with an MCP client. Running it directly in a terminal shows this help."
 )]
 struct Cli {
-    /// Select the MCP tool exposure mode
+    /// Choose how S2 operations are exposed
     #[arg(long, value_enum, default_value_t)]
     mode: ServerMode,
 
-    /// Hide all S2 operations that can mutate state
+    /// Hide operations that mutate S2 state
     #[arg(long)]
     readonly: bool,
 
-    /// Restrict the server to one S2 basin
+    /// Limit access to one S2 basin
     #[arg(long)]
     basin: Option<String>,
 
-    /// Advertise destructive operations; has no effect with --readonly
+    /// Expose destructive operations; ignored with --readonly
     #[arg(long)]
     allow_destructive: bool,
 
@@ -53,11 +53,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     log_file: Option<PathBuf>,
 
-    /// Use an explicitly isolated development connection
+    /// Use an isolated development connection
     #[arg(long)]
     dev: bool,
 
-    /// Connect development mode to one existing S2 endpoint
+    /// Connect to an existing development endpoint
     #[arg(
         long,
         value_name = "URL",
@@ -66,7 +66,7 @@ struct Cli {
     )]
     endpoint: Option<String>,
 
-    /// Read development account and basin endpoints from the environment
+    /// Read account and basin endpoints from environment variables
     #[arg(long, requires = "dev", conflicts_with = "endpoint")]
     from_env: bool,
 
@@ -163,13 +163,13 @@ fn print_interactive_help() -> io::Result<()> {
     )?;
     writeln!(
         stdout,
-        "  {}s2-mcp --dev{}                      Start an ephemeral S2 Lite container",
+        "  {}s2-mcp --dev{}                      Start a temporary S2 Lite container when needed",
         command.render(),
         command.render_reset()
     )?;
     writeln!(
         stdout,
-        "  {}s2-mcp --dev --endpoint{} {}<URL>{}     Connect to an existing development server",
+        "  {}s2-mcp --dev --endpoint{} {}<URL>{}     Use an existing S2 development server",
         command.render(),
         command.render_reset(),
         placeholder.render(),
@@ -177,7 +177,7 @@ fn print_interactive_help() -> io::Result<()> {
     )?;
     writeln!(
         stdout,
-        "  {}s2-mcp --dev --from-env{}           Read development endpoints from the environment",
+        "  {}s2-mcp --dev --from-env{}           Read endpoints from environment variables",
         command.render(),
         command.render_reset()
     )?;
@@ -207,7 +207,7 @@ fn print_interactive_help() -> io::Result<()> {
     writeln!(stdout)?;
     writeln!(
         stdout,
-        "Run this command through an MCP client. Interactive execution displays this help."
+        "Use this command with an MCP client. Running it directly in a terminal shows this help."
     )
 }
 
@@ -232,7 +232,7 @@ fn launch_intent(dev: bool, endpoint: Option<String>, from_env: bool) -> LaunchI
 
 async fn run_server(options: ServerOptions, intent: LaunchIntent) -> Result<()> {
     let runtime = ResolvedRuntime::resolve(intent).await?;
-    s2_mcp::serve(options, runtime.configuration().clone()).await
+    s2_mcp::serve_runtime(options, runtime).await
 }
 
 fn init_tracing(log_file: Option<&Path>) -> Result<()> {

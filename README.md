@@ -34,7 +34,7 @@ Add Cloud and development as separate MCP servers:
 }
 ```
 
-Cloud mode reads credentials saved by the [S2 CLI](https://s2.dev/docs/cli/configuration). Development mode starts an ephemeral S2 Lite container and needs Docker or another compatible container runtime.
+Cloud mode reads credentials saved by the [S2 CLI](https://s2.dev/docs/cli/configuration). Managed development starts a temporary S2 Lite container when needed and reuses it for the MCP process lifetime. Docker or another compatible runtime is required.
 
 `s2-mcp` is an MCP stdio server. Launch it from an MCP client. Running it in a terminal prints help and exits.
 
@@ -67,10 +67,10 @@ s2-mcp [OPTIONS]
 
 ### Connections
 
-Pick one connection when the process starts. The process cannot switch later.
+Choose a connection when the process starts. It cannot switch later.
 
 - **Cloud** (`s2-mcp`): uses S2 Cloud defaults. Reads the S2 CLI config. Honors `S2_ACCESS_TOKEN`. Ignores endpoint environment variables.
-- **Managed development** (`s2-mcp --dev`): starts ephemeral S2 Lite with Testcontainers. Needs Docker or a compatible runtime.
+- **Managed development** (`s2-mcp --dev`): starts a temporary S2 Lite container when needed and reuses it for the process lifetime. Requires Docker or a compatible runtime.
 - **Existing endpoint** (`s2-mcp --dev --endpoint URL`): uses one URL for account and basin APIs. Does not start a container.
 - **Environment** (`s2-mcp --dev --from-env`): requires both `S2_ACCOUNT_ENDPOINT` and `S2_BASIN_ENDPOINT`. A partial pair fails. Never falls back to Cloud.
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
-use s2_mcp_codemode::{CodeMode, FunctionDescriptor};
+use s2_mcp_codemode::{CodeMode, FunctionDescriptor, SearchInput, SearchOutput};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -143,6 +143,7 @@ pub(crate) struct Operation {
 #[derive(Debug, Clone)]
 pub(crate) struct Catalog {
     operations: Arc<[Operation]>,
+    code_mode: CodeMode,
 }
 
 impl Catalog {
@@ -258,12 +259,16 @@ impl Catalog {
                 true,
             )?,
         ];
-        let operations = candidates
+        let operations: Arc<[Operation]> = candidates
             .into_iter()
             .filter(|operation| policy.allows(operation.id.access(), operation.id.scope()))
             .collect::<Vec<_>>()
             .into();
-        Ok(Self { operations })
+        let code_mode = build_code_mode(&operations)?;
+        Ok(Self {
+            operations,
+            code_mode,
+        })
     }
 
     pub(crate) fn find(&self, name: &str) -> Option<&Operation> {
@@ -279,28 +284,37 @@ impl Catalog {
             .collect()
     }
 
-    pub(crate) fn code_mode(&self) -> Result<CodeMode> {
-        let descriptors = self
-            .operations
-            .iter()
-            .map(|operation| {
-                let input_schema = Value::Object((*operation.tool.input_schema).clone());
-                let output_schema = operation
-                    .tool
-                    .output_schema
-                    .as_deref()
-                    .map_or(Value::Bool(true), |schema| Value::Object(schema.clone()));
-                FunctionDescriptor::from_schemas(
-                    operation.id.name(),
-                    operation.description,
-                    input_schema,
-                    output_schema,
-                )
-                .map_err(|error| Error::CodeMode(error.to_string()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        CodeMode::new(descriptors).map_err(|error| Error::CodeMode(error.to_string()))
+    pub(crate) fn code_mode(&self) -> CodeMode {
+        self.code_mode.clone()
     }
+
+    pub(crate) fn search(&self, input: SearchInput) -> Result<SearchOutput> {
+        self.code_mode
+            .search(input)
+            .map_err(|error| Error::CodeMode(error.to_string()))
+    }
+}
+
+fn build_code_mode(operations: &[Operation]) -> Result<CodeMode> {
+    let descriptors = operations
+        .iter()
+        .map(|operation| {
+            let input_schema = Value::Object((*operation.tool.input_schema).clone());
+            let output_schema = operation
+                .tool
+                .output_schema
+                .as_deref()
+                .map_or(Value::Bool(true), |schema| Value::Object(schema.clone()));
+            FunctionDescriptor::from_schemas(
+                operation.id.name(),
+                operation.description,
+                input_schema,
+                output_schema,
+            )
+            .map_err(|error| Error::CodeMode(error.to_string()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    CodeMode::new(descriptors).map_err(|error| Error::CodeMode(error.to_string()))
 }
 
 fn operation<I, O>(
