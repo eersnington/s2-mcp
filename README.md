@@ -4,23 +4,23 @@
 
 ## Install
 
-Install Rust 1.89 or newer and [`just`](https://just.systems/), then install `s2-mcp` from the workspace:
+Install Rust 1.89 or newer and [`just`](https://just.systems/), then install from the workspace:
 
 ```sh
 just install
 ```
 
-This runs `cargo install` and adds the `s2-mcp` binary to Cargo's global binary directory, normally `~/.cargo/bin`. Make sure that directory is in your `PATH`:
+This runs `cargo install` and places `s2-mcp` in Cargo’s global binary directory, normally `~/.cargo/bin`. Confirm that directory is on your `PATH`:
 
 ```sh
 s2-mcp --version
 ```
 
-Run `just install` again after pulling changes to replace the installed binary.
+Run `just install` again after you pull changes to replace the installed binary. For local development without installing, use `just mcp` instead of `s2-mcp`.
 
 ## Configure an MCP client
 
-Configure Cloud and development as separate MCP servers:
+Add Cloud and development as separate MCP servers:
 
 ```json
 {
@@ -34,11 +34,13 @@ Configure Cloud and development as separate MCP servers:
 }
 ```
 
-Cloud mode reads credentials saved by the S2 CLI. Development mode starts an ephemeral S2 Lite container and requires Docker or another compatible container runtime.
+Cloud mode reads credentials saved by the [S2 CLI](https://s2.dev/docs/cli/configuration). Development mode starts an ephemeral S2 Lite container and needs Docker or another compatible container runtime.
 
-## Choose a mode
+`s2-mcp` is an MCP stdio server. Launch it from an MCP client. Running it in a terminal prints help and exits.
 
-In Code Mode, the agent searches the S2 API and writes a TypeScript program. Code Mode is the default:
+## Modes
+
+Code Mode is the default. The agent searches the S2 API, then runs a TypeScript program:
 
 ```typescript
 async function run() {
@@ -46,39 +48,89 @@ async function run() {
 }
 ```
 
-In Tools Mode, the client receives one MCP tool for each S2 operation:
+Tools Mode exposes one MCP tool per S2 operation. Both modes enforce the same access policy. Set the mode in your MCP client config:
 
-```sh
-s2-mcp --mode tools
+```json
+{
+  "s2": {
+    "command": "s2-mcp",
+    "args": ["--mode", "tools"]
+  }
+}
 ```
 
-Both modes enforce the same access policy.
+## CLI reference
 
-## Limit access
-
-Pass flags when you start the server:
-
-```sh
-s2-mcp --readonly
-s2-mcp --basin example-basin
-s2-mcp --allow-destructive
+```text
+s2-mcp [OPTIONS]
 ```
 
-`--readonly` hides mutating operations. `--basin` restricts access to one basin. Destructive operations remain hidden unless you pass `--allow-destructive`.
+### Connections
 
-Run `s2-mcp --help` for all options. When developing locally, `just mcp --help` runs the workspace version without installing it first.
+Pick one connection when the process starts. The process cannot switch later.
 
-## Choose a connection
+- **Cloud** (`s2-mcp`): uses S2 Cloud defaults. Reads the S2 CLI config. Honors `S2_ACCESS_TOKEN`. Ignores endpoint environment variables.
+- **Managed development** (`s2-mcp --dev`): starts ephemeral S2 Lite with Testcontainers. Needs Docker or a compatible runtime.
+- **Existing endpoint** (`s2-mcp --dev --endpoint URL`): uses one URL for account and basin APIs. Does not start a container.
+- **Environment** (`s2-mcp --dev --from-env`): requires both `S2_ACCOUNT_ENDPOINT` and `S2_BASIN_ENDPOINT`. A partial pair fails. Never falls back to Cloud.
 
-`s2-mcp` uses S2 Cloud defaults and ignores endpoint environment variables. Development connections are explicit:
+`--endpoint` and `--from-env` require `--dev` and conflict with each other.
+
+### Options
+
+- **`--mode <MODE>`**: `code` (default) or `tools`
+- **`--readonly`**: hide operations that mutate state
+- **`--basin <BASIN>`**: restrict access to one basin
+- **`--allow-destructive`**: advertise destructive operations; has no effect with `--readonly`
+- **`--dev`**: use an isolated development connection
+- **`--endpoint <URL>`**: with `--dev`, connect both APIs to one existing server
+- **`--from-env`**: with `--dev`, read endpoints from the environment
+- **`--log-file <PATH>`**: write diagnostic logs to a file
+- **`-h`, `--help`**: print help
+- **`-V`, `--version`**: print version
+
+### Examples
+
+Read-only Cloud access:
+
+```json
+{
+  "s2": {
+    "command": "s2-mcp",
+    "args": ["--readonly"]
+  }
+}
+```
+
+Tools Mode against one basin:
+
+```json
+{
+  "s2": {
+    "command": "s2-mcp",
+    "args": ["--mode", "tools", "--basin", "example-basin"]
+  }
+}
+```
+
+Development against a local S2 Lite you already run:
+
+```json
+{
+  "s2-dev": {
+    "command": "s2-mcp",
+    "args": ["--dev", "--endpoint", "http://127.0.0.1:8080"]
+  }
+}
+```
+
+Development from environment variables:
 
 ```sh
-s2-mcp --dev
-s2-mcp --dev --endpoint http://127.0.0.1:8080
+S2_ACCOUNT_ENDPOINT=http://account.internal:8080 \
+S2_BASIN_ENDPOINT=http://basin.internal:8081 \
 s2-mcp --dev --from-env
 ```
-
-Managed `--dev` data is ephemeral. `--endpoint` connects both APIs to one existing server. `--from-env` requires both `S2_ACCOUNT_ENDPOINT` and `S2_BASIN_ENDPOINT`; it never falls back to Cloud.
 
 ## Read more
 
