@@ -44,6 +44,8 @@ fn code_mode_executes_an_isolated_s2_callback() -> TestResult {
 async function run() {
   const connection = await S2.connectionInfo({});
   return {
+    environment: connection.environment,
+    accountEndpoint: connection.account_endpoint,
     readonly: connection.readonly,
     hostGlobalsPresent: ["Deno", "process", "fetch", "WebAssembly", "ArrayBuffer"]
       .some((name) => name in globalThis),
@@ -56,9 +58,49 @@ async function run() {
     assert_eq!(output["success"], json!(true));
     assert_eq!(
         output["output"],
-        json!({ "readonly": true, "hostGlobalsPresent": false })
+        json!({
+            "environment": "cloud",
+            "accountEndpoint": "S2 Cloud default",
+            "readonly": true,
+            "hostGlobalsPresent": false
+        })
     );
     assert_eq!(output["tool_calls"][0]["name"], json!("S2.connectionInfo"));
+    Ok(())
+}
+
+#[test]
+fn development_flags_enforce_an_explicit_boundary() -> TestResult {
+    let binary = assert_cmd::cargo::cargo_bin!("s2-mcp");
+    let endpoint_without_dev = Command::new(binary)
+        .args(["--endpoint", "http://127.0.0.1:8080"])
+        .stdin(Stdio::piped())
+        .output()?;
+    assert!(!endpoint_without_dev.status.success());
+    assert!(String::from_utf8_lossy(&endpoint_without_dev.stderr).contains("--dev"));
+
+    let conflicting_sources = Command::new(binary)
+        .args(["--dev", "--endpoint", "http://127.0.0.1:8080", "--from-env"])
+        .stdin(Stdio::piped())
+        .output()?;
+    assert!(!conflicting_sources.status.success());
+    assert!(String::from_utf8_lossy(&conflicting_sources.stderr).contains("cannot be used with"));
+    Ok(())
+}
+
+#[test]
+fn from_env_rejects_a_partial_endpoint_pair() -> TestResult {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("s2-mcp"))
+        .args(["--dev", "--from-env"])
+        .env("S2_ACCOUNT_ENDPOINT", "http://127.0.0.1:8080")
+        .env_remove("S2_BASIN_ENDPOINT")
+        .stdin(Stdio::piped())
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires S2_ACCOUNT_ENDPOINT and S2_BASIN_ENDPOINT")
+    );
     Ok(())
 }
 
@@ -133,8 +175,8 @@ impl Session {
         let mut child = Command::new(assert_cmd::cargo::cargo_bin!("s2-mcp"))
             .args(arguments)
             .env("S2_ACCESS_TOKEN", "test-token")
-            .env_remove("S2_ACCOUNT_ENDPOINT")
-            .env_remove("S2_BASIN_ENDPOINT")
+            .env("S2_ACCOUNT_ENDPOINT", "http://127.0.0.1:1")
+            .env("S2_BASIN_ENDPOINT", "http://127.0.0.1:2")
             .env_remove("S2_ENCRYPTION_KEY")
             .env_remove("S2_COMPRESSION")
             .env_remove("S2_SSL_NO_VERIFY")

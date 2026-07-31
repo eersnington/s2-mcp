@@ -1,12 +1,7 @@
 use std::{
-    env,
     error::Error,
-    ffi::OsString,
     io::{BufRead, BufReader, BufWriter, Write},
-    net::{Ipv4Addr, TcpListener, TcpStream},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    thread,
-    time::{Duration, Instant},
 };
 
 use s2_sdk::{
@@ -20,21 +15,10 @@ const STREAM: &str = "roundtrip";
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[tokio::test]
-#[ignore = "requires S2 Lite"]
+#[ignore = "requires a Docker-compatible container runtime"]
 async fn s2_lite_round_trip_covers_tools_code_mode_and_policy() -> TestResult {
-    let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?
-        .local_addr()?
-        .port();
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let mut lite = ChildGuard(
-        Command::new(env::var_os("S2_LITE_BIN").unwrap_or_else(|| OsString::from("s2")))
-            .args(["lite", "--port", &port.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?,
-    );
-    wait_for_lite(&mut lite, port)?;
+    let lite = s2_testcontainers::S2Lite::start().await?;
+    let endpoint = lite.endpoint().to_owned();
     provision(&endpoint).await?;
 
     let mut tools = Session::start(&endpoint, &["--mode", "tools"])?;
@@ -75,6 +59,24 @@ async fn s2_lite_round_trip_covers_tools_code_mode_and_policy() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn managed_development_retains_s2_lite_while_serving() -> TestResult {
+    let mut session = Session::start_managed(&["--mode", "tools"])?;
+    let connection = session.call("connection_info", json!({}))?;
+    assert_eq!(connection["environment"], json!("managed_lite"));
+    assert!(
+        connection["account_endpoint"]
+            .as_str()
+            .is_some_and(|endpoint| endpoint.starts_with("http://"))
+    );
+
+    let basin = "managed-lite-lifetime";
+    let ensured = session.call("ensure_basin", json!({ "basin": basin }))?;
+    assert_eq!(ensured["basin"]["name"], json!(basin));
+    Ok(())
+}
+
 async fn provision(endpoint: &str) -> TestResult {
     let s2 =
         S2::new(S2Config::new("ignored").with_endpoints(S2Endpoints::for_endpoint(endpoint)?))?;
@@ -88,22 +90,6 @@ async fn provision(endpoint: &str) -> TestResult {
     Ok(())
 }
 
-fn wait_for_lite(lite: &mut ChildGuard, port: u16) -> TestResult {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if let Some(status) = lite.0.try_wait()? {
-            return Err(format!("S2 Lite exited with {status}").into());
-        }
-        if TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok() {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err("S2 Lite did not start".into());
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
 struct Session {
     child: Child,
     stdin: BufWriter<ChildStdin>,
@@ -113,11 +99,17 @@ struct Session {
 
 impl Session {
     fn start(endpoint: &str, arguments: &[&str]) -> TestResult<Self> {
+        Self::start_with_arguments(&["--dev", "--endpoint", endpoint], arguments)
+    }
+
+    fn start_managed(arguments: &[&str]) -> TestResult<Self> {
+        Self::start_with_arguments(&["--dev"], arguments)
+    }
+
+    fn start_with_arguments(launch: &[&str], arguments: &[&str]) -> TestResult<Self> {
         let mut child = Command::new(assert_cmd::cargo::cargo_bin!("s2-mcp"))
+            .args(launch)
             .args(arguments)
-            .env("S2_ACCESS_TOKEN", "ignored")
-            .env("S2_ACCOUNT_ENDPOINT", endpoint)
-            .env("S2_BASIN_ENDPOINT", endpoint)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -207,14 +199,5 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-struct ChildGuard(Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }

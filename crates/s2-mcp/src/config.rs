@@ -13,6 +13,26 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 const USER_AGENT: &str = concat!("s2-mcp/", env!("CARGO_PKG_VERSION"));
+const DEVELOPMENT_ACCESS_TOKEN: &str = "ignored";
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ConnectionEnvironment {
+    #[default]
+    Cloud,
+    ManagedLite,
+    CustomEndpoint,
+}
+
+impl ConnectionEnvironment {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Cloud => "cloud",
+            Self::ManagedLite => "managed_lite",
+            Self::CustomEndpoint => "custom_endpoint",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -42,6 +62,7 @@ pub struct S2Configuration {
     encryption_key: Option<String>,
     compression: Option<S2Compression>,
     ssl_no_verify: Option<bool>,
+    environment: ConnectionEnvironment,
 }
 
 pub(crate) type ConnectionConfig = S2Configuration;
@@ -62,6 +83,7 @@ impl S2Configuration {
         Self {
             account_endpoint: Some(account_endpoint.into()),
             basin_endpoint: Some(basin_endpoint.into()),
+            environment: ConnectionEnvironment::CustomEndpoint,
             ..self
         }
     }
@@ -88,6 +110,10 @@ impl S2Configuration {
     }
 
     pub fn load() -> Result<Self> {
+        Self::load_cloud()
+    }
+
+    pub fn load_cloud() -> Result<Self> {
         let path = config_path()?;
         let mut config = if path.exists() {
             let contents = fs::read_to_string(&path).map_err(|source| Error::ReadConfig {
@@ -103,8 +129,9 @@ impl S2Configuration {
         };
 
         override_string("S2_ACCESS_TOKEN", &mut config.access_token)?;
-        override_string("S2_ACCOUNT_ENDPOINT", &mut config.account_endpoint)?;
-        override_string("S2_BASIN_ENDPOINT", &mut config.basin_endpoint)?;
+        config.account_endpoint = None;
+        config.basin_endpoint = None;
+        config.environment = ConnectionEnvironment::Cloud;
         override_string("S2_ENCRYPTION_KEY", &mut config.encryption_key)?;
         override_bool("S2_SSL_NO_VERIFY", &mut config.ssl_no_verify)?;
         if let Some(compression) = environment_value("S2_COMPRESSION")? {
@@ -121,6 +148,55 @@ impl S2Configuration {
         }
 
         Ok(config)
+    }
+
+    pub fn load_shared_endpoint(endpoint: &str) -> Result<Self> {
+        let access_token = environment_value("S2_ACCESS_TOKEN")?
+            .unwrap_or_else(|| DEVELOPMENT_ACCESS_TOKEN.to_owned());
+        Self::for_shared_endpoint(
+            endpoint,
+            access_token,
+            ConnectionEnvironment::CustomEndpoint,
+        )
+    }
+
+    pub fn load_development_environment() -> Result<Self> {
+        let account = environment_value("S2_ACCOUNT_ENDPOINT")?.ok_or_else(|| {
+            Error::InvalidConfig(
+                "--from-env requires S2_ACCOUNT_ENDPOINT and S2_BASIN_ENDPOINT".to_owned(),
+            )
+        })?;
+        let basin = environment_value("S2_BASIN_ENDPOINT")?.ok_or_else(|| {
+            Error::InvalidConfig(
+                "--from-env requires S2_ACCOUNT_ENDPOINT and S2_BASIN_ENDPOINT".to_owned(),
+            )
+        })?;
+        let access_token = environment_value("S2_ACCESS_TOKEN")?
+            .unwrap_or_else(|| DEVELOPMENT_ACCESS_TOKEN.to_owned());
+        let configuration = Self::new(access_token)
+            .with_endpoints(account, basin)
+            .with_environment(ConnectionEnvironment::CustomEndpoint);
+        configuration.sdk_config()?;
+        Ok(configuration)
+    }
+
+    pub(crate) fn for_shared_endpoint(
+        endpoint: &str,
+        access_token: impl Into<String>,
+        environment: ConnectionEnvironment,
+    ) -> Result<Self> {
+        S2Endpoints::for_endpoint(endpoint)
+            .map_err(|error| Error::InvalidConfig(error.to_string()))?;
+        Ok(Self::new(access_token)
+            .with_endpoints(endpoint, endpoint)
+            .with_environment(environment))
+    }
+
+    fn with_environment(self, environment: ConnectionEnvironment) -> Self {
+        Self {
+            environment,
+            ..self
+        }
     }
 
     pub fn sdk_config(&self) -> Result<S2Config> {
@@ -169,6 +245,10 @@ impl S2Configuration {
             (Some(account), Some(_)) => account,
             _ => "S2 Cloud default",
         }
+    }
+
+    pub(crate) const fn environment_label(&self) -> &'static str {
+        self.environment.label()
     }
 
     pub(crate) fn basin_endpoint_label(&self) -> &str {

@@ -25,6 +25,10 @@ pub enum Error {
     },
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    #[error(
+        "Could not start S2 Lite. Start Docker, provide --endpoint URL, or use --from-env. Details: {source}"
+    )]
+    StartManagedLite { source: s2_testcontainers::Error },
     #[error("invalid tool arguments: {0}")]
     InvalidArguments(String),
     #[error("operation is not available under the active server policy")]

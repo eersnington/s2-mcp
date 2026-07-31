@@ -2,6 +2,7 @@ mod catalog;
 mod config;
 mod error;
 mod executor;
+mod launch;
 mod mode;
 mod operation_surface;
 mod operations;
@@ -11,6 +12,7 @@ mod tool_mode;
 
 pub use config::{S2Compression, S2Configuration};
 pub use error::{Error, Result};
+pub use launch::{DevSource, LaunchIntent, ResolvedRuntime};
 pub use mode::ServerMode;
 use operation_surface::OperationSurface;
 pub use policy::Policy;

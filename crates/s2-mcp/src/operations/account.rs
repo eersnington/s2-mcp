@@ -29,6 +29,7 @@ impl Operations {
     pub(super) fn connection_info(&self, arguments: Value) -> Result<Value> {
         let _: ConnectionInfoInput = parse(arguments)?;
         serialize(ConnectionInfoOutput {
+            environment: self.connection.environment_label().to_owned(),
             account_endpoint: self.connection.account_endpoint_label().to_owned(),
             basin_endpoint: self.connection.basin_endpoint_label().to_owned(),
             readonly: self.policy.readonly,
@@ -174,6 +175,7 @@ pub(crate) struct ConnectionInfoInput {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct ConnectionInfoOutput {
+    environment: String,
     account_endpoint: String,
     basin_endpoint: String,
     readonly: bool,
