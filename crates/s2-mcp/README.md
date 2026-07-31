@@ -4,18 +4,21 @@ The `s2-mcp` crate contains the MCP server, S2 operations, access policy, CLI, a
 
 ## Configure S2
 
-The server reads credentials saved by the [S2 CLI](https://s2.dev/docs/cli/configuration). You can override the saved configuration with these environment variables:
+Cloud mode reads credentials saved by the [S2 CLI](https://s2.dev/docs/cli/configuration). `S2_ACCESS_TOKEN` may override the saved token. Endpoint environment variables never change a Cloud connection.
 
-```text
-S2_ACCESS_TOKEN
-S2_ACCOUNT_ENDPOINT
-S2_BASIN_ENDPOINT
-S2_ENCRYPTION_KEY
-S2_COMPRESSION
-S2_SSL_NO_VERIFY
+Use explicit development mode for S2 Lite or custom deployments:
+
+```sh
+s2-mcp --dev
+s2-mcp --dev --endpoint http://127.0.0.1:8080
+S2_ACCOUNT_ENDPOINT=http://account.internal:8080 \
+S2_BASIN_ENDPOINT=http://basin.internal:8081 \
+s2-mcp --dev --from-env
 ```
 
-Set both endpoint variables to use custom endpoints. `S2_ENCRYPTION_KEY` applies to encrypted append and read operations. `S2_COMPRESSION` accepts `none`, `gzip`, or `zstd`.
+Managed development starts an ephemeral S2 Lite container through Testcontainers and requires Docker or another compatible runtime. `--endpoint` uses one server for both APIs. `--from-env` requires both endpoint variables and never falls back to Cloud. `S2_ACCESS_TOKEN` supplies a development token when the endpoint requires one.
+
+`S2_ENCRYPTION_KEY`, `S2_COMPRESSION`, and `S2_SSL_NO_VERIFY` configure Cloud connections. `S2_COMPRESSION` accepts `none`, `gzip`, or `zstd`.
 
 ## Run development checks
 
@@ -37,7 +40,7 @@ cargo test --locked -p s2-mcp --test protocol \
   -- --ignored --exact
 ```
 
-The S2 Lite test requires `s2-lite` in `PATH`:
+The S2 Lite test requires Docker or another compatible container runtime:
 
 ```sh
 cargo test --locked -p s2-mcp --test s2_lite -- --ignored

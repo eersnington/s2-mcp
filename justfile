@@ -4,6 +4,9 @@ default:
 build:
     cargo build --manifest-path Cargo.toml --locked --workspace
 
+install:
+    cargo install --path crates/s2-mcp --locked --force
+
 mcp *args:
     cargo run --manifest-path Cargo.toml --locked -p s2-mcp -- {{args}}
 
