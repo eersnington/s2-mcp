@@ -25,8 +25,11 @@ use tokio::sync::Semaphore;
 
 use crate::{CallOutcome, CallTrace, Error as PublicError, Invoker, Limits, validate_json_depth};
 
-const RUNTIME_SOURCE: &str = include_str!("runtime.js");
 const MODULE_SPECIFIER: &str = "file:///execute.js";
+const STARTUP_SNAPSHOT: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/codemode_runtime_snapshot.bin"));
+const FINALIZE_SOURCE: &str =
+    "globalThis.__codeModeFinalize(); delete globalThis.__codeModeFinalize;";
 
 pub(crate) fn transpile(parsed: deno_ast::ParsedSource) -> Result<String, String> {
     let emitted = parsed
@@ -337,6 +340,7 @@ pub(crate) async fn execute(
     let mut runtime = JsRuntime::try_new(RuntimeOptions {
         create_params: Some(v8::Isolate::create_params().heap_limits(0, limits.max_heap_bytes)),
         module_loader: Some(Rc::new(deno_core::NoopModuleLoader)),
+        startup_snapshot: Some(STARTUP_SNAPSHOT),
         extensions: vec![codemode_runtime::init(invoker.clone())],
         ..Default::default()
     })
@@ -346,7 +350,7 @@ pub(crate) async fn execute(
         limits.execution_timeout,
     );
     runtime
-        .execute_script("<runtime_bootstrap>", RUNTIME_SOURCE)
+        .execute_script("<runtime_finalize>", FINALIZE_SOURCE)
         .map_err(|error| RuntimeError::Bootstrap(js_error_message(&error)))?;
     let namespace = invoker
         .public_names

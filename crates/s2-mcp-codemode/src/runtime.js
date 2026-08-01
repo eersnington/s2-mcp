@@ -5,8 +5,7 @@
   const MAX_PENDING_TIMERS = 64;
   const MAX_TIMER_DELAY_MS = 30 * 1000;
   const globalObject = globalThis;
-  const extractArguments = Deno.core.ops.op_codemode_extract_arguments;
-  const invokeOperation = Deno.core.ops.op_codemode_invoke;
+  let invokeOperation;
   const queueUserTimer = Deno.core.queueUserTimer;
   const cancelTimer = Deno.core.cancelTimer;
   const stdout = [];
@@ -103,7 +102,7 @@
       const namespace = Object.create(null);
       for (const [name, operation] of Object.entries(descriptors)) {
         Object.defineProperty(namespace, name, {
-          value: async (input = {}) => await invokeOperation(operation, extractArguments(input)),
+          value: async (input = {}) => await invokeOperation(operation, input),
           configurable: false,
           enumerable: true,
           writable: false,
@@ -160,18 +159,31 @@
     writable: false,
   });
 
-  for (const name of [
-    "Deno", "__bootstrap", "__infra", "process", "fetch", "WebSocket", "WebTransport",
-    "EventSource", "XMLHttpRequest", "Request", "Response", "Headers", "FormData", "Worker",
-    "SharedWorker", "BroadcastChannel", "MessageChannel", "MessagePort", "structuredClone",
-    "crypto", "Blob", "File", "CompressionStream", "DecompressionStream", "ArrayBuffer",
-    "SharedArrayBuffer", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray",
-    "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "BigInt64Array",
-    "BigUint64Array", "Float16Array", "Float32Array", "Float64Array", "Atomics", "WebAssembly",
-    "TextEncoder", "TextDecoder"
-  ]) {
-    if (!Reflect.deleteProperty(globalObject, name) || name in globalObject) {
-      throw new Error(`failed to remove runtime global ${name}`);
-    }
-  }
+  Object.defineProperty(globalObject, "__codeModeFinalize", {
+    value: () => {
+      const operation = globalObject.Deno?.core?.ops?.op_codemode_invoke;
+      if (typeof operation !== "function") {
+        throw new Error("Code Mode invoke operation was not registered");
+      }
+      invokeOperation = operation;
+      for (const name of [
+        "Deno", "__bootstrap", "__infra", "process", "fetch", "WebSocket", "WebTransport",
+        "EventSource", "XMLHttpRequest", "Request", "Response", "Headers", "FormData", "Worker",
+        "SharedWorker", "BroadcastChannel", "MessageChannel", "MessagePort", "structuredClone",
+        "crypto", "Blob", "File", "CompressionStream", "DecompressionStream", "ArrayBuffer",
+        "SharedArrayBuffer", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray",
+        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "BigInt64Array",
+        "BigUint64Array", "Float16Array", "Float32Array", "Float64Array", "Atomics", "WebAssembly",
+        "TextEncoder", "TextDecoder"
+      ]) {
+        if (!Reflect.deleteProperty(globalObject, name) || name in globalObject) {
+          throw new Error(`failed to remove runtime global ${name}`);
+        }
+      }
+    },
+    configurable: true,
+    enumerable: false,
+    writable: false,
+  });
+
 })();
