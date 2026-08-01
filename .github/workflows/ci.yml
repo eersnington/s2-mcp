@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo check --locked --workspace --all-targets
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+        with:
+          components: clippy
+      - run: cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
+
+  dependency-policy:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo install cargo-deny --locked
+      - run: cargo deny --manifest-path Cargo.toml --config deny.toml --workspace --locked check
+
+  tests:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Code Mode
+            command: cargo test --locked -p s2-mcp-codemode
+          - name: Server library
+            command: cargo test --locked -p s2-mcp --lib
+          - name: MCP protocol
+            command: cargo test --locked -p s2-mcp --test protocol
+          - name: Code Mode sandbox
+            command: cargo test --locked -p s2-mcp --test sandbox
+          - name: S2 Lite integration
+            command: cargo test --locked -p s2-mcp --test s2_lite -- --ignored
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: ${{ matrix.command }}

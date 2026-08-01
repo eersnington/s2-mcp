@@ -11,3 +11,7 @@ target/
 # Logs and operating-system metadata
 *.log
 .DS_Store
+
+# Generated npm release payloads
+/npm/*/prebuilds/
+/dist/

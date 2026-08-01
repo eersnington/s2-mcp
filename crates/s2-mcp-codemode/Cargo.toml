@@ -1,11 +1,12 @@
 [package]
 name = "s2-mcp-codemode"
-version = "0.1.0"
-description = "Isolated TypeScript Code Mode runtime"
+version.workspace = true
+description = "Isolated TypeScript Code Mode runtime for s2-mcp"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 
 [dependencies]
 deno_ast = { workspace = true }
