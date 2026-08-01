@@ -13,13 +13,13 @@ use s2_mcp_codemode::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::sync::{OnceCell, Semaphore};
+use tokio::sync::OnceCell;
 
 use crate::{
     catalog::{Catalog, OperationId, json_object_schema},
     config::S2Configuration,
     error::{Error, Result},
-    executor::execute_in_subprocess,
+    executor::ExecutorPool,
     launch::ResolvedRuntime,
     mode::ServerMode,
     operations::Operations,
@@ -38,11 +38,9 @@ pub struct S2McpServer {
     catalog: Catalog,
     policy: Policy,
     operations: Arc<OnceCell<Arc<Operations>>>,
-    executor_permits: Arc<Semaphore>,
+    executor_pool: Arc<OnceCell<Arc<ExecutorPool>>>,
     surface_mode: ServerMode,
 }
-
-const MAX_CONCURRENT_EXECUTORS: usize = 4;
 
 impl S2McpServer {
     pub(crate) fn new(runtime: Arc<ResolvedRuntime>, options: &ServerOptions) -> Result<Self> {
@@ -53,7 +51,7 @@ impl S2McpServer {
             catalog,
             policy,
             operations: Arc::new(OnceCell::new()),
-            executor_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
+            executor_pool: Arc::new(OnceCell::new()),
             surface_mode: options.mode,
         })
     }
@@ -143,17 +141,16 @@ impl S2McpServer {
         input: ExecuteInput,
         connection: &S2Configuration,
     ) -> Result<Value> {
-        let _permit = self
-            .executor_permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|error| {
-                Error::CodeMode(format!("executor concurrency limiter closed: {error}"))
-            })?;
-        Ok(serde_json::to_value(
-            execute_in_subprocess(input, connection, &self.policy).await?,
-        )?)
+        let pool = self
+            .executor_pool
+            .get_or_try_init(|| async {
+                ExecutorPool::new(connection.clone(), self.policy.clone())
+                    .await
+                    .map(Arc::new)
+            })
+            .await?
+            .clone();
+        Ok(serde_json::to_value(pool.execute(input).await?)?)
     }
 }
 
