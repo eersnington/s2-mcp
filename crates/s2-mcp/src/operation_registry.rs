@@ -62,17 +62,6 @@ macro_rules! define_operation_registry {
                 }
             }
 
-            pub(crate) const fn description(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $description,)+
-                }
-            }
-
-            pub(crate) const fn idempotent(self) -> bool {
-                match self {
-                    $(Self::$variant => $idempotent,)+
-                }
-            }
         }
 
         pub(crate) fn candidates(policy: &Policy) -> Result<Vec<Operation>> {
@@ -80,11 +69,11 @@ macro_rules! define_operation_registry {
                 $(operation_candidate!(
                     policy,
                     OperationId::$variant,
-                    OperationId::$variant.description(),
+                    $description,
                     $input,
                     $basin_input,
                     $output,
-                    OperationId::$variant.idempotent()
+                    $idempotent
                 ),)+
             ])
         }

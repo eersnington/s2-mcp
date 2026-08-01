@@ -82,11 +82,11 @@ impl ExecutorPool {
     pub(crate) async fn execute(&self, input: ExecuteInput) -> Result<ExecuteOutput> {
         let _permit = self.acquire_permit().await?;
         let mut lease = self.acquire_worker().await;
-        let WorkerExecution { result, reusable } = lease
+        let result = lease
             .worker
             .execute(&self.executable, &self.connection, &self.policy, input)
             .await;
-        lease.reusable = reusable;
+        lease.reusable = !lease.worker.needs_restart;
         result
     }
 
@@ -138,11 +138,6 @@ struct Worker {
     needs_restart: bool,
 }
 
-struct WorkerExecution {
-    result: Result<ExecuteOutput>,
-    reusable: bool,
-}
-
 impl Worker {
     async fn spawn(
         executable: &Path,
@@ -186,7 +181,7 @@ impl Worker {
         let response = read_frame(&mut worker.stdout).await?;
         let Some(WorkerResponse::Ready) = response else {
             return Err(Error::executor_failed(
-                "execution worker did not complete initialization".to_owned(),
+                "execution worker did not complete initialization",
             ));
         };
         Ok(worker)
@@ -198,20 +193,12 @@ impl Worker {
         connection: &ConnectionConfig,
         policy: &Policy,
         input: ExecuteInput,
-    ) -> WorkerExecution {
-        if let Err(error) = self.ensure_ready(executable, connection, policy).await {
-            return WorkerExecution {
-                result: Err(error),
-                reusable: false,
-            };
-        }
+    ) -> Result<ExecuteOutput> {
+        self.ensure_ready(executable, connection, policy).await?;
 
         if let Err(error) = write_frame(&mut self.stdin, &WorkerRequest::Execute { input }).await {
             self.abort();
-            return WorkerExecution {
-                result: Err(error),
-                reusable: false,
-            };
+            return Err(error);
         }
 
         let response = match tokio::time::timeout(
@@ -223,54 +210,35 @@ impl Worker {
             Ok(Ok(Some(response))) => response,
             Ok(Ok(None)) => {
                 self.abort();
-                return WorkerExecution {
-                    result: Err(Error::executor_failed(
-                        "execution worker closed before responding".to_owned(),
-                    )),
-                    reusable: false,
-                };
+                return Err(Error::executor_failed(
+                    "execution worker closed before responding",
+                ));
             }
             Ok(Err(error)) => {
                 self.abort();
-                return WorkerExecution {
-                    result: Err(error),
-                    reusable: false,
-                };
+                return Err(error);
             }
             Err(_) => {
                 self.abort();
-                return WorkerExecution {
-                    result: Err(Error::execution_timeout(
-                        Limits::default().execution_timeout.as_secs(),
-                    )),
-                    reusable: false,
-                };
+                return Err(Error::execution_timeout(
+                    Limits::default().execution_timeout.as_secs(),
+                ));
             }
         };
 
         match response {
-            WorkerResponse::Success { output } => WorkerExecution {
-                result: Ok(output),
-                reusable: true,
-            },
-            WorkerResponse::Error { error } => WorkerExecution {
-                result: Err(match error {
-                    ErrorReport::Public(diagnostic) => Error::code_mode_with_diagnostic(diagnostic),
-                    ErrorReport::Private => {
-                        Error::executor_failed("execution worker returned an internal error")
-                    }
-                }),
-                reusable: true,
-            },
+            WorkerResponse::Success { output } => Ok(output),
+            WorkerResponse::Error { error } => Err(match error {
+                ErrorReport::Public(diagnostic) => Error::code_mode_with_diagnostic(diagnostic),
+                ErrorReport::Private => {
+                    Error::executor_failed("execution worker returned an internal error")
+                }
+            }),
             WorkerResponse::Ready => {
                 self.abort();
-                WorkerExecution {
-                    result: Err(Error::executor_failed(
-                        "execution worker returned an unexpected initialization response"
-                            .to_owned(),
-                    )),
-                    reusable: false,
-                }
+                Err(Error::executor_failed(
+                    "execution worker returned an unexpected initialization response",
+                ))
             }
         }
     }
@@ -305,12 +273,12 @@ pub(crate) async fn run_child() -> Result<()> {
     let mut stdout = tokio::io::stdout();
     let Some(request) = read_frame(&mut stdin).await? else {
         return Err(Error::executor_failed(
-            "execution worker received no initialization request".to_owned(),
+            "execution worker received no initialization request",
         ));
     };
     let WorkerRequest::Initialize { connection, policy } = request else {
         return Err(Error::executor_failed(
-            "execution worker was not initialized before use".to_owned(),
+            "execution worker was not initialized before use",
         ));
     };
     let state = ChildState::new(connection, policy)?;
@@ -323,7 +291,7 @@ pub(crate) async fn run_child() -> Result<()> {
         match request {
             WorkerRequest::Initialize { .. } => {
                 return Err(Error::executor_failed(
-                    "execution worker received a duplicate initialization request".to_owned(),
+                    "execution worker received a duplicate initialization request",
                 ));
             }
             WorkerRequest::Execute { input } => {
