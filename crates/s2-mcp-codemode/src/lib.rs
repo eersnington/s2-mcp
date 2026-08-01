@@ -82,7 +82,7 @@ pub struct ExecuteInput {
     pub code: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Limits {
     pub max_source_bytes: usize,
     pub max_output_bytes: usize,
@@ -93,6 +93,13 @@ pub struct Limits {
     pub max_callback_trace_calls: usize,
     pub max_heap_bytes: usize,
     pub execution_timeout: Duration,
+}
+
+impl Limits {
+    pub fn supervisor_timeout(self) -> Duration {
+        self.execution_timeout
+            .saturating_add(Duration::from_secs(1))
+    }
 }
 
 impl Default for Limits {

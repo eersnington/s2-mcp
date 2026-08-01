@@ -28,6 +28,10 @@ impl Scope {
             Self::Global | Self::Basin | Self::Stream => true,
         }
     }
+
+    pub(crate) const fn accepts_basin_injection(self) -> bool {
+        matches!(self, Self::Basin | Self::Stream)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

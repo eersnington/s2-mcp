@@ -40,6 +40,7 @@ pub struct S2McpServer {
     operations: Arc<OnceCell<Arc<Operations>>>,
     executor_pool: Arc<OnceCell<Arc<ExecutorPool>>>,
     surface_mode: ServerMode,
+    limits: Limits,
 }
 
 impl S2McpServer {
@@ -53,6 +54,7 @@ impl S2McpServer {
             operations: Arc::new(OnceCell::new()),
             executor_pool: Arc::new(OnceCell::new()),
             surface_mode: options.mode,
+            limits: Limits::default(),
         })
     }
 
@@ -117,21 +119,18 @@ impl S2McpServer {
     }
 
     fn call_search(&self, arguments: Value) -> Result<Value> {
-        validate_json_depth(&arguments, Limits::default().max_json_depth)
-            .map_err(|error| Error::code_mode(error.to_string()))?;
+        validate_json_depth(&arguments, self.limits.max_json_depth).map_err(Error::from)?;
         let input = decode(arguments)?;
         Ok(serde_json::to_value(self.catalog.search(input)?)?)
     }
 
     fn prepare_execute(&self, arguments: Value) -> Result<ExecuteInput> {
-        validate_json_depth(&arguments, Limits::default().max_json_depth)
-            .map_err(|error| Error::code_mode(error.to_string()))?;
+        validate_json_depth(&arguments, self.limits.max_json_depth).map_err(Error::from)?;
         decode(arguments)
     }
 
     fn prepare_tool(&self, name: &str, arguments: Value) -> Result<(OperationId, Value)> {
-        validate_json_depth(&arguments, Limits::default().max_json_depth)
-            .map_err(|error| Error::code_mode(error.to_string()))?;
+        validate_json_depth(&arguments, self.limits.max_json_depth).map_err(Error::from)?;
         let operation_id = self.catalog.find(name).ok_or_else(Error::forbidden)?.id;
         Ok((operation_id, arguments))
     }
@@ -144,7 +143,7 @@ impl S2McpServer {
         let pool = self
             .executor_pool
             .get_or_try_init(|| async {
-                ExecutorPool::new(connection.clone(), self.policy.clone())
+                ExecutorPool::new(connection.clone(), self.policy.clone(), self.limits)
                     .await
                     .map(Arc::new)
             })

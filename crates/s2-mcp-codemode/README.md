@@ -1,6 +1,6 @@
 # Understand the Code Mode runtime
 
-The `s2-mcp-codemode` crate generates the TypeScript API, transpiles submitted code, and runs it in an isolated V8 child process.
+The `s2-mcp-codemode` crate generates the TypeScript API, transpiles submitted code, and runs it in a capability-restricted V8 child process.
 
 ## Runtime behavior
 
@@ -8,6 +8,7 @@ Each `execute` request starts a child process with an empty inherited environmen
 The server runs at most four Code Mode executor child processes concurrently.
 
 Code Mode rejects static and dynamic imports. It does not expose the host process, environment, filesystem, network, or WebAssembly.
+The child contains runtime failures but is not an operating-system security sandbox. Treat V8 and `deno_core` as part of the trusted computing base.
 
 TypeScript is parsed and transpiled without semantic type checking. Rust validates each S2 call before sending it to `s2-sdk`.
 

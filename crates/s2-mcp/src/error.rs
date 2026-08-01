@@ -195,6 +195,20 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<s2_mcp_codemode::Error> for Error {
+    fn from(error: s2_mcp_codemode::Error) -> Self {
+        match error {
+            s2_mcp_codemode::Error::SourceTooLarge { maximum } => {
+                Self::Execution(ExecutionError::SourceTooLarge { maximum })
+            }
+            s2_mcp_codemode::Error::ExecutionTimeout { seconds } => {
+                Self::Execution(ExecutionError::Timeout { seconds })
+            }
+            error => Self::code_mode(error.to_string()),
+        }
+    }
+}
+
 impl Error {
     pub fn invalid_arguments(message: impl Into<String>) -> Self {
         Self::Request(RequestError::InvalidArguments(message.into()))

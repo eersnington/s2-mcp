@@ -1,12 +1,4 @@
-use std::{
-    env, io,
-    path::Path,
-    process::Stdio,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{env, io, path::Path, process::Stdio, sync::Arc};
 
 use s2_mcp_codemode::{CodeMode, ExecuteInput, ExecuteOutput, InvokeError, Invoker, Limits};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -14,13 +6,13 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{Mutex, MutexGuard, OnceCell, OwnedSemaphorePermit, Semaphore},
+    sync::{OnceCell, OwnedSemaphorePermit, Semaphore},
 };
 
 use crate::{
     catalog::Catalog,
     config::ConnectionConfig,
-    error::{Error, ErrorReport, Result},
+    error::{Error, ErrorCode, ErrorReport, Result},
     operations::Operations,
     policy::Policy,
 };
@@ -36,6 +28,7 @@ enum WorkerRequest {
     Initialize {
         connection: ConnectionConfig,
         policy: Policy,
+        limits: Limits,
     },
     Execute {
         input: ExecuteInput,
@@ -52,42 +45,39 @@ enum WorkerResponse {
 
 #[derive(Clone)]
 pub(crate) struct ExecutorPool {
-    workers: Arc<Vec<Arc<Mutex<Worker>>>>,
     permits: Arc<Semaphore>,
-    next_worker: Arc<AtomicUsize>,
     executable: Arc<std::path::PathBuf>,
     connection: ConnectionConfig,
     policy: Policy,
+    limits: Limits,
 }
 
 impl ExecutorPool {
-    pub(crate) async fn new(connection: ConnectionConfig, policy: Policy) -> Result<Self> {
+    pub(crate) async fn new(
+        connection: ConnectionConfig,
+        policy: Policy,
+        limits: Limits,
+    ) -> Result<Self> {
         let executable = Arc::new(env::current_exe().map_err(Error::start_executor)?);
-        let mut workers = Vec::with_capacity(MAX_CONCURRENT_EXECUTORS);
-        for _ in 0..MAX_CONCURRENT_EXECUTORS {
-            let worker = Worker::spawn(&executable, &connection, &policy).await?;
-            workers.push(Arc::new(Mutex::new(worker)));
-        }
-
         Ok(Self {
-            workers: Arc::new(workers),
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
-            next_worker: Arc::new(AtomicUsize::new(0)),
             executable,
             connection,
             policy,
+            limits,
         })
     }
 
     pub(crate) async fn execute(&self, input: ExecuteInput) -> Result<ExecuteOutput> {
         let _permit = self.acquire_permit().await?;
-        let mut lease = self.acquire_worker().await;
-        let result = lease
-            .worker
-            .execute(&self.executable, &self.connection, &self.policy, input)
-            .await;
-        lease.reusable = !lease.worker.needs_restart;
-        result
+        let mut worker = Worker::spawn(
+            &self.executable,
+            &self.connection,
+            &self.policy,
+            self.limits,
+        )
+        .await?;
+        worker.execute(input, self.limits).await
     }
 
     async fn acquire_permit(&self) -> Result<OwnedSemaphorePermit> {
@@ -97,45 +87,12 @@ impl ExecutorPool {
             .await
             .map_err(|error| Error::executor_failed(format!("executor pool closed: {error}")))
     }
-
-    async fn acquire_worker(&self) -> WorkerLease<'_> {
-        let start = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len();
-        for offset in 0..self.workers.len() {
-            let index = (start + offset) % self.workers.len();
-            let Ok(worker) = self.workers[index].try_lock() else {
-                continue;
-            };
-            return WorkerLease {
-                worker,
-                reusable: false,
-            };
-        }
-
-        WorkerLease {
-            worker: self.workers[start].lock().await,
-            reusable: false,
-        }
-    }
-}
-
-struct WorkerLease<'pool> {
-    worker: MutexGuard<'pool, Worker>,
-    reusable: bool,
-}
-
-impl Drop for WorkerLease<'_> {
-    fn drop(&mut self) {
-        if !self.reusable {
-            self.worker.abort();
-        }
-    }
 }
 
 struct Worker {
     child: Child,
     stdin: ChildStdin,
     stdout: ChildStdout,
-    needs_restart: bool,
 }
 
 impl Worker {
@@ -143,6 +100,7 @@ impl Worker {
         executable: &Path,
         connection: &ConnectionConfig,
         policy: &Policy,
+        limits: Limits,
     ) -> Result<Self> {
         let mut child = Command::new(executable)
             .arg(EXECUTOR_COMMAND)
@@ -168,13 +126,13 @@ impl Worker {
             child,
             stdin,
             stdout,
-            needs_restart: false,
         };
         write_frame(
             &mut worker.stdin,
             &WorkerRequest::Initialize {
                 connection: connection.clone(),
                 policy: policy.clone(),
+                limits,
             },
         )
         .await?;
@@ -187,48 +145,41 @@ impl Worker {
         Ok(worker)
     }
 
-    async fn execute(
-        &mut self,
-        executable: &Path,
-        connection: &ConnectionConfig,
-        policy: &Policy,
-        input: ExecuteInput,
-    ) -> Result<ExecuteOutput> {
-        self.ensure_ready(executable, connection, policy).await?;
-
+    async fn execute(&mut self, input: ExecuteInput, limits: Limits) -> Result<ExecuteOutput> {
         if let Err(error) = write_frame(&mut self.stdin, &WorkerRequest::Execute { input }).await {
             self.abort();
             return Err(error);
         }
 
-        let response = match tokio::time::timeout(
-            Limits::default().execution_timeout,
-            read_frame(&mut self.stdout),
-        )
-        .await
-        {
-            Ok(Ok(Some(response))) => response,
-            Ok(Ok(None)) => {
-                self.abort();
-                return Err(Error::executor_failed(
-                    "execution worker closed before responding",
-                ));
-            }
-            Ok(Err(error)) => {
-                self.abort();
-                return Err(error);
-            }
-            Err(_) => {
-                self.abort();
-                return Err(Error::execution_timeout(
-                    Limits::default().execution_timeout.as_secs(),
-                ));
-            }
-        };
+        let response =
+            match tokio::time::timeout(limits.supervisor_timeout(), read_frame(&mut self.stdout))
+                .await
+            {
+                Ok(Ok(Some(response))) => response,
+                Ok(Ok(None)) => {
+                    self.abort();
+                    return Err(Error::executor_failed(
+                        "execution worker closed before responding",
+                    ));
+                }
+                Ok(Err(error)) => {
+                    self.abort();
+                    return Err(error);
+                }
+                Err(_) => {
+                    self.abort();
+                    return Err(Error::execution_timeout(limits.execution_timeout.as_secs()));
+                }
+            };
 
         match response {
             WorkerResponse::Success { output } => Ok(output),
             WorkerResponse::Error { error } => Err(match error {
+                ErrorReport::Public(diagnostic)
+                    if diagnostic.code == ErrorCode::ExecutionTimeout =>
+                {
+                    Error::execution_timeout(limits.execution_timeout.as_secs())
+                }
                 ErrorReport::Public(diagnostic) => Error::code_mode_with_diagnostic(diagnostic),
                 ErrorReport::Private => {
                     Error::executor_failed("execution worker returned an internal error")
@@ -243,23 +194,7 @@ impl Worker {
         }
     }
 
-    async fn ensure_ready(
-        &mut self,
-        executable: &Path,
-        connection: &ConnectionConfig,
-        policy: &Policy,
-    ) -> Result<()> {
-        if !self.needs_restart {
-            return Ok(());
-        }
-
-        self.child.wait().await.map_err(Error::executor_io)?;
-        *self = Self::spawn(executable, connection, policy).await?;
-        Ok(())
-    }
-
     fn abort(&mut self) {
-        self.needs_restart = true;
         if let Err(error) = self.child.start_kill()
             && error.kind() != io::ErrorKind::NotFound
         {
@@ -276,35 +211,31 @@ pub(crate) async fn run_child() -> Result<()> {
             "execution worker received no initialization request",
         ));
     };
-    let WorkerRequest::Initialize { connection, policy } = request else {
+    let WorkerRequest::Initialize {
+        connection,
+        policy,
+        limits,
+    } = request
+    else {
         return Err(Error::executor_failed(
             "execution worker was not initialized before use",
         ));
     };
-    let state = ChildState::new(connection, policy)?;
+    let state = ChildState::new(connection, policy, limits)?;
     write_frame(&mut stdout, &WorkerResponse::Ready).await?;
 
-    loop {
-        let Some(request) = read_frame(&mut stdin).await? else {
-            return Ok(());
-        };
-        match request {
-            WorkerRequest::Initialize { .. } => {
-                return Err(Error::executor_failed(
-                    "execution worker received a duplicate initialization request",
-                ));
-            }
-            WorkerRequest::Execute { input } => {
-                let response = match execute_child_request(&state, input).await {
-                    Ok(output) => WorkerResponse::Success { output },
-                    Err(error) => WorkerResponse::Error {
-                        error: error.report(),
-                    },
-                };
-                write_frame(&mut stdout, &response).await?;
-            }
-        }
-    }
+    let Some(WorkerRequest::Execute { input }) = read_frame(&mut stdin).await? else {
+        return Err(Error::executor_failed(
+            "execution worker received no execution request",
+        ));
+    };
+    let response = match execute_child_request(&state, input).await {
+        Ok(output) => WorkerResponse::Success { output },
+        Err(error) => WorkerResponse::Error {
+            error: error.report(),
+        },
+    };
+    write_frame(&mut stdout, &response).await
 }
 
 #[derive(Clone)]
@@ -314,10 +245,11 @@ struct ChildState {
     connection: ConnectionConfig,
     operations: Arc<OnceCell<Arc<Operations>>>,
     policy: Arc<Policy>,
+    limits: Limits,
 }
 
 impl ChildState {
-    fn new(connection: ConnectionConfig, policy: Policy) -> Result<Self> {
+    fn new(connection: ConnectionConfig, policy: Policy, limits: Limits) -> Result<Self> {
         let catalog = Catalog::new(&policy)?;
         let code_mode = catalog.code_mode();
         Ok(Self {
@@ -326,6 +258,7 @@ impl ChildState {
             connection,
             operations: Arc::new(OnceCell::new()),
             policy: Arc::new(policy),
+            limits,
         })
     }
 }
@@ -361,9 +294,9 @@ async fn execute_child_request(state: &ChildState, input: ExecuteInput) -> Resul
     });
     state
         .code_mode
-        .execute(&input.code, invoker, Limits::default())
+        .execute(&input.code, invoker, state.limits)
         .await
-        .map_err(|error| Error::code_mode(error.to_string()))
+        .map_err(Into::into)
 }
 
 fn map_invoke_error(error: Error) -> InvokeError {

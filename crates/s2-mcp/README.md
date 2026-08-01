@@ -54,4 +54,4 @@ Call the library entry point from a Rust binary:
 s2_mcp::serve(options, configuration).await?;
 ```
 
-Code Mode starts the current executable with the hidden `__execute` command. An embedding binary must route that command to `s2_mcp::run_executor_child()`. Tools Mode does not use a child process.
+Code Mode starts the current executable with the hidden `__execute` command. An embedding binary must route that command to `s2_mcp::run_executor_child()`. Tools Mode does not use a child process. The child limits accidental host access and contains runtime failures; it is not an operating-system security sandbox.

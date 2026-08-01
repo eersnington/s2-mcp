@@ -223,15 +223,10 @@ impl S2Configuration {
                     .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
                 config = config.with_endpoints(endpoints);
             }
-            (Some(_), None) => {
-                tracing::warn!(
-                    "account endpoint is set but basin endpoint is not; both are required for custom endpoints, using S2 Cloud defaults"
-                );
-            }
-            (None, Some(_)) => {
-                tracing::warn!(
-                    "basin endpoint is set but account endpoint is not; both are required for custom endpoints, using S2 Cloud defaults"
-                );
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(Error::Config(ConfigError::Invalid(
+                    "account_endpoint and basin_endpoint must be configured together".to_owned(),
+                )));
             }
             (None, None) => {}
         }

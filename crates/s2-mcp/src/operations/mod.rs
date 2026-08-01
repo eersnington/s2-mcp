@@ -45,6 +45,16 @@ impl Operations {
     }
 
     pub(crate) async fn dispatch(&self, id: OperationId, arguments: Value) -> Result<Value> {
+        self.policy.enforce_operation(id.access(), id.scope())?;
+        let mut arguments = arguments;
+        if let Some(basin) = &self.policy.basin
+            && id.scope().accepts_basin_injection()
+            && let Value::Object(object) = &mut arguments
+        {
+            object
+                .entry("basin")
+                .or_insert_with(|| Value::String(basin.clone()));
+        }
         operation_registry::dispatch(self, id, arguments).await
     }
 }
