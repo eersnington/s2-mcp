@@ -6,6 +6,7 @@ mod error;
 mod executor;
 mod launch;
 mod mode;
+mod operation_registry;
 mod operations;
 mod policy;
 mod server;

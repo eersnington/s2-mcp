@@ -26,7 +26,7 @@ const MAX_VALUES_PER_METRIC: usize = 1_024;
 const MAX_METRIC_OUTPUT_ITEMS: usize = 4_096;
 
 impl Operations {
-    pub(super) fn connection_info(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn connection_info(&self, arguments: Value) -> Result<Value> {
         let _: ConnectionInfoInput = parse(arguments)?;
         serialize(ConnectionInfoOutput {
             environment: self.connection.environment_label().to_owned(),
@@ -38,7 +38,7 @@ impl Operations {
         })
     }
 
-    pub(super) async fn list_basins(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn list_basins(&self, arguments: Value) -> Result<Value> {
         let request: ListBasinsRequest = parse(arguments)?;
         let limit = bounded(
             request.limit.unwrap_or(MAX_LIST_LIMIT),

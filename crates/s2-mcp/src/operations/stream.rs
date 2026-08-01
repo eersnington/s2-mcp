@@ -12,13 +12,13 @@ use super::{Operations, parse, serialize};
 use crate::error::Result;
 
 impl Operations {
-    pub(super) async fn check_tail(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn check_tail(&self, arguments: Value) -> Result<Value> {
         let request: StreamRequest = parse(arguments)?;
         let stream = self.stream(&request.basin, &request.stream)?;
         serialize(PositionOutput::from(stream.check_tail().await?))
     }
 
-    pub(super) async fn fence_stream(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn fence_stream(&self, arguments: Value) -> Result<Value> {
         let request: FenceStreamRequest = parse(arguments)?;
         let stream = self.stream(&request.basin, &request.stream)?;
         let fencing_token: FencingToken = request.fencing_token.parse()?;
@@ -32,7 +32,7 @@ impl Operations {
         .await
     }
 
-    pub(super) async fn trim_stream(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn trim_stream(&self, arguments: Value) -> Result<Value> {
         let request: TrimStreamRequest = parse(arguments)?;
         let stream = self.stream(&request.basin, &request.stream)?;
         let command = CommandRecord::trim(request.trim_point);

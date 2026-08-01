@@ -30,7 +30,7 @@ const MAX_APPEND_METERED_BYTES: usize = 1024 * 1024;
 const MAX_APPEND_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 
 impl Operations {
-    pub(super) async fn read_records(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn read_records(&self, arguments: Value) -> Result<Value> {
         let request: ReadRecordsRequest = parse(arguments)?;
         let stream = self.stream(&request.basin, &request.stream)?;
         let bounds = read_bounds(request.limit, request.max_bytes, request.max_output_bytes)?;
@@ -49,7 +49,7 @@ impl Operations {
         serialize(prepared.into_read_records(bounds.output_bytes)?)
     }
 
-    pub(super) async fn wait_for_records(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn wait_for_records(&self, arguments: Value) -> Result<Value> {
         let request: WaitForRecordsRequest = parse(arguments)?;
         let stream = self.stream(&request.basin, &request.stream)?;
         let bounds = read_bounds(request.limit, request.max_bytes, request.max_output_bytes)?;
@@ -85,7 +85,7 @@ impl Operations {
         serialize(prepared.into_wait_for_records(bounds.output_bytes, client_timed_out)?)
     }
 
-    pub(super) async fn append_records(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn append_records(&self, arguments: Value) -> Result<Value> {
         validate_append_request_size(&arguments)?;
         let request: AppendRecordsRequest = parse(arguments)?;
         let stream = self.stream(&request.basin, &request.stream)?;

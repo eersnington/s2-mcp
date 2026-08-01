@@ -27,7 +27,7 @@ const MAX_DIFF_ITEMS: usize = 64;
 const DEFAULT_RETENTION_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 
 impl Operations {
-    pub(super) async fn list_streams(&self, arguments: Value) -> Result<Value> {
+    pub(crate) async fn list_streams(&self, arguments: Value) -> Result<Value> {
         let request: ListStreamsRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
         let limit = bounded(

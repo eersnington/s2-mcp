@@ -8,9 +8,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
-    catalog::OperationId,
     config::ConnectionConfig,
     error::{Error, Result},
+    operation_registry::{self, OperationId},
     policy::Policy,
 };
 
@@ -40,28 +40,7 @@ impl Operations {
     }
 
     pub(crate) async fn dispatch(&self, id: OperationId, arguments: Value) -> Result<Value> {
-        match id {
-            OperationId::ConnectionInfo => self.connection_info(arguments),
-            OperationId::ListBasins => self.list_basins(arguments).await,
-            OperationId::GetBasinConfig => self.get_basin_config(arguments).await,
-            OperationId::ListStreams => self.list_streams(arguments).await,
-            OperationId::GetStreamConfig => self.get_stream_config(arguments).await,
-            OperationId::CheckTail => self.check_tail(arguments).await,
-            OperationId::ReadRecords => self.read_records(arguments).await,
-            OperationId::WaitForRecords => self.wait_for_records(arguments).await,
-            OperationId::DiffResources => self.diff_resources(arguments).await,
-            OperationId::GetMetrics => self.get_metrics(arguments).await,
-            OperationId::EnsureBasin => self.ensure_basin(arguments).await,
-            OperationId::EnsureStream => self.ensure_stream(arguments).await,
-            OperationId::AppendRecords => self.append_records(arguments).await,
-            OperationId::ReconfigureBasin => self.reconfigure_basin(arguments).await,
-            OperationId::ReconfigureStream => self.reconfigure_stream(arguments).await,
-            OperationId::FenceStream => self.fence_stream(arguments).await,
-            OperationId::DeleteBasin => self.delete_basin(arguments).await,
-            OperationId::DeleteStream => self.delete_stream(arguments).await,
-            OperationId::TrimStream => self.trim_stream(arguments).await,
-            OperationId::RevokeAccessToken => self.revoke_access_token(arguments).await,
-        }
+        operation_registry::dispatch(self, id, arguments).await
     }
 }
 
