@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -36,7 +37,7 @@ macro_rules! define_operation_registry {
             }
         ),+ $(,)?
     ) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
         pub(crate) enum OperationId {
             $(
                 $variant,

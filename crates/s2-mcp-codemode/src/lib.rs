@@ -241,6 +241,13 @@ pub enum Error {
 #[derive(Debug, Clone)]
 pub struct CodeMode {
     functions: Arc<[IndexedFunction]>,
+    execution_api: ExecutionApi,
+}
+
+/// The precomputed S2 namespace required to execute Code Mode programs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionApi {
+    names: BTreeMap<String, String>,
 }
 
 impl CodeMode {
@@ -265,13 +272,27 @@ impl CodeMode {
             functions.push(index_function(descriptor));
         }
         functions.sort_by(|left, right| left.descriptor.name.cmp(&right.descriptor.name));
+        let names = functions
+            .iter()
+            .map(|function| {
+                (
+                    function.descriptor.operation.clone(),
+                    function.descriptor.name.clone(),
+                )
+            })
+            .collect();
         Ok(Self {
             functions: functions.into(),
+            execution_api: ExecutionApi { names },
         })
     }
 
     pub fn descriptors(&self) -> impl ExactSizeIterator<Item = &FunctionDescriptor> {
         self.functions.iter().map(|function| &function.descriptor)
+    }
+
+    pub fn execution_api(&self) -> ExecutionApi {
+        self.execution_api.clone()
     }
 
     pub fn search(&self, input: SearchInput) -> Result<SearchOutput, Error> {
@@ -339,6 +360,17 @@ impl CodeMode {
         invoker: Invoker,
         limits: Limits,
     ) -> Result<ExecuteOutput, Error> {
+        self.execution_api.execute(source, invoker, limits).await
+    }
+}
+
+impl ExecutionApi {
+    pub async fn execute(
+        &self,
+        source: &str,
+        invoker: Invoker,
+        limits: Limits,
+    ) -> Result<ExecuteOutput, Error> {
         validate_limits(limits)?;
         if source.len() > limits.max_source_bytes {
             return Err(Error::SourceTooLarge {
@@ -353,17 +385,7 @@ impl CodeMode {
                 return bound_output(transpile_failure(message), limits.max_output_bytes);
             }
         };
-        let descriptors = self
-            .functions
-            .iter()
-            .map(|function| {
-                (
-                    function.descriptor.operation.clone(),
-                    function.descriptor.name.clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let runtime_invoker = RuntimeInvoker::new(invoker, descriptors, limits);
+        let runtime_invoker = RuntimeInvoker::new(invoker, self.names.clone(), limits);
         let execution = tokio::time::timeout(
             limits.execution_timeout,
             runtime::execute(transpiled, runtime_invoker, limits),

@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
-use s2_mcp_codemode::{CodeMode, FunctionDescriptor, SearchInput, SearchOutput};
+use s2_mcp_codemode::{CodeMode, ExecutionApi, FunctionDescriptor, SearchInput, SearchOutput};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -62,8 +62,13 @@ impl Catalog {
             .collect()
     }
 
-    pub(crate) fn code_mode(&self) -> CodeMode {
-        self.code_mode.clone()
+    pub(crate) fn execution_manifest(&self) -> (ExecutionApi, BTreeMap<String, OperationId>) {
+        let operation_ids = self
+            .operations
+            .iter()
+            .map(|operation| (operation.id.name().to_owned(), operation.id))
+            .collect();
+        (self.code_mode.execution_api(), operation_ids)
     }
 
     pub(crate) fn search(&self, input: SearchInput) -> Result<SearchOutput> {

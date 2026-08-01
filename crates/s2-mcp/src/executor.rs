@@ -1,6 +1,6 @@
-use std::{env, io, path::Path, process::Stdio, sync::Arc};
+use std::{collections::BTreeMap, env, io, path::Path, process::Stdio, sync::Arc};
 
-use s2_mcp_codemode::{CodeMode, ExecuteInput, ExecuteOutput, InvokeError, Invoker, Limits};
+use s2_mcp_codemode::{ExecuteInput, ExecuteOutput, ExecutionApi, InvokeError, Invoker, Limits};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{
@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use crate::{
-    catalog::Catalog,
+    catalog::OperationId,
     config::ConnectionConfig,
     error::{Error, ErrorCode, ErrorReport, Result},
     operations::Operations,
@@ -28,6 +28,8 @@ struct WorkerRequest {
     policy: Policy,
     limits: Limits,
     input: ExecuteInput,
+    execution_api: ExecutionApi,
+    operation_ids: BTreeMap<String, OperationId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,6 +46,8 @@ pub(crate) struct ExecutorPool {
     connection: ConnectionConfig,
     policy: Policy,
     limits: Limits,
+    execution_api: ExecutionApi,
+    operation_ids: BTreeMap<String, OperationId>,
 }
 
 impl ExecutorPool {
@@ -51,6 +55,8 @@ impl ExecutorPool {
         connection: ConnectionConfig,
         policy: Policy,
         limits: Limits,
+        execution_api: ExecutionApi,
+        operation_ids: BTreeMap<String, OperationId>,
     ) -> Result<Self> {
         let executable = Arc::new(env::current_exe().map_err(Error::start_executor)?);
         Ok(Self {
@@ -59,6 +65,8 @@ impl ExecutorPool {
             connection,
             policy,
             limits,
+            execution_api,
+            operation_ids,
         })
     }
 
@@ -71,6 +79,8 @@ impl ExecutorPool {
                 self.policy.clone(),
                 self.limits,
                 input,
+                self.execution_api.clone(),
+                self.operation_ids.clone(),
             )
             .await?;
             worker.response(self.limits).await
@@ -101,6 +111,8 @@ impl Worker {
         policy: Policy,
         limits: Limits,
         input: ExecuteInput,
+        execution_api: ExecutionApi,
+        operation_ids: BTreeMap<String, OperationId>,
     ) -> Result<Self> {
         let mut child = Command::new(executable)
             .arg(EXECUTOR_COMMAND)
@@ -129,6 +141,8 @@ impl Worker {
                 policy,
                 limits,
                 input,
+                execution_api,
+                operation_ids,
             },
         )
         .await?;
@@ -170,13 +184,15 @@ pub(crate) async fn run_child() -> Result<()> {
         policy,
         limits,
         input,
+        execution_api,
+        operation_ids,
     }) = read_frame(&mut stdin).await?
     else {
         return Err(Error::executor_failed(
             "execution worker received no request",
         ));
     };
-    let state = ChildState::new(connection, policy, limits)?;
+    let state = ChildState::new(connection, policy, limits, execution_api, operation_ids);
     let response = match execute_child_request(&state, input).await {
         Ok(output) => WorkerResponse::Success { output },
         Err(error) => WorkerResponse::Error {
@@ -188,8 +204,8 @@ pub(crate) async fn run_child() -> Result<()> {
 
 #[derive(Clone)]
 struct ChildState {
-    catalog: Catalog,
-    code_mode: CodeMode,
+    execution_api: ExecutionApi,
+    operation_ids: BTreeMap<String, OperationId>,
     connection: ConnectionConfig,
     operations: Arc<OnceCell<Arc<Operations>>>,
     policy: Arc<Policy>,
@@ -197,36 +213,40 @@ struct ChildState {
 }
 
 impl ChildState {
-    fn new(connection: ConnectionConfig, policy: Policy, limits: Limits) -> Result<Self> {
-        let catalog = Catalog::new(&policy)?;
-        let code_mode = catalog.code_mode();
-        Ok(Self {
-            catalog,
-            code_mode,
+    fn new(
+        connection: ConnectionConfig,
+        policy: Policy,
+        limits: Limits,
+        execution_api: ExecutionApi,
+        operation_ids: BTreeMap<String, OperationId>,
+    ) -> Self {
+        Self {
+            execution_api,
+            operation_ids,
             connection,
             operations: Arc::new(OnceCell::new()),
             policy: Arc::new(policy),
             limits,
-        })
+        }
     }
 }
 
 async fn execute_child_request(state: &ChildState, input: ExecuteInput) -> Result<ExecuteOutput> {
-    let catalog = state.catalog.clone();
+    let operation_ids = state.operation_ids.clone();
     let operations = state.operations.clone();
     let connection = state.connection.clone();
     let policy = state.policy.clone();
     let invoker = Invoker::new(move |operation, arguments| {
-        let catalog = catalog.clone();
+        let operation_ids = operation_ids.clone();
         let operations = operations.clone();
         let connection = connection.clone();
         let policy = policy.clone();
         async move {
-            let operation_id = catalog
-                .find(&operation)
+            let operation_id = operation_ids
+                .get(&operation)
+                .copied()
                 .ok_or_else(Error::forbidden)
-                .map_err(map_invoke_error)?
-                .id;
+                .map_err(map_invoke_error)?;
             let operations = operations
                 .get_or_try_init(|| async {
                     Operations::new(connection.clone(), policy.clone()).map(Arc::new)
@@ -241,7 +261,7 @@ async fn execute_child_request(state: &ChildState, input: ExecuteInput) -> Resul
         }
     });
     state
-        .code_mode
+        .execution_api
         .execute(&input.code, invoker, state.limits)
         .await
         .map_err(Into::into)

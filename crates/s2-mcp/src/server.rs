@@ -37,6 +37,7 @@ pub struct S2McpServer {
     runtime: Arc<ResolvedRuntime>,
     catalog: Catalog,
     policy: Policy,
+    code_tools: Vec<Tool>,
     operations: Arc<OnceCell<Arc<Operations>>>,
     executor_pool: Arc<OnceCell<Arc<ExecutorPool>>>,
     surface_mode: ServerMode,
@@ -47,10 +48,12 @@ impl S2McpServer {
     pub(crate) fn new(runtime: Arc<ResolvedRuntime>, options: &ServerOptions) -> Result<Self> {
         let policy = options.policy.clone();
         let catalog = Catalog::new(&policy)?;
+        let code_tools = code_tools(&policy)?;
         Ok(Self {
             runtime,
             catalog,
             policy,
+            code_tools,
             operations: Arc::new(OnceCell::new()),
             executor_pool: Arc::new(OnceCell::new()),
             surface_mode: options.mode,
@@ -73,49 +76,13 @@ impl S2McpServer {
 
     fn tools(&self) -> Result<Vec<Tool>> {
         match self.surface_mode {
-            ServerMode::Code => {
-                let mut tools = vec![self.search_tool()?, self.execute_tool()?];
-                tools.sort_by(|left, right| left.name.cmp(&right.name));
-                Ok(tools)
-            }
+            ServerMode::Code => Ok(self.code_tools.clone()),
             ServerMode::Tools => {
                 let mut tools = self.catalog.tools();
                 tools.sort_by(|left, right| left.name.cmp(&right.name));
                 Ok(tools)
             }
         }
-    }
-
-    fn search_tool(&self) -> Result<Tool> {
-        Ok(Tool::new(
-            "search",
-            "Search the policy-filtered S2 TypeScript API. Returns complete declarations for the matched functions.",
-            json_object_schema::<SearchInput>()?,
-        )
-        .with_raw_output_schema(json_object_schema::<SearchOutput>()?)
-        .with_annotations(
-            ToolAnnotations::new()
-                .read_only(true)
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ))
-    }
-
-    fn execute_tool(&self) -> Result<Tool> {
-        Ok(Tool::new(
-            "execute",
-            "Execute isolated TypeScript defining `async function run()`. Use `search` first to discover S2 functions.",
-            json_object_schema::<ExecuteInput>()?,
-        )
-        .with_raw_output_schema(json_object_schema::<ExecuteOutput>()?)
-        .with_annotations(
-            ToolAnnotations::new()
-                .read_only(self.policy.readonly)
-                .destructive(self.policy.allows_destructive())
-                .idempotent(self.policy.readonly)
-                .open_world(true),
-        ))
     }
 
     fn call_search(&self, arguments: Value) -> Result<Value> {
@@ -143,9 +110,16 @@ impl S2McpServer {
         let pool = self
             .executor_pool
             .get_or_try_init(|| async {
-                ExecutorPool::new(connection.clone(), self.policy.clone(), self.limits)
-                    .await
-                    .map(Arc::new)
+                let (execution_api, operation_ids) = self.catalog.execution_manifest();
+                ExecutorPool::new(
+                    connection.clone(),
+                    self.policy.clone(),
+                    self.limits,
+                    execution_api,
+                    operation_ids,
+                )
+                .await
+                .map(Arc::new)
             })
             .await?
             .clone();
@@ -184,11 +158,11 @@ impl ServerHandler for S2McpServer {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         match self.surface_mode {
-            ServerMode::Code => match name {
-                "search" => self.search_tool().ok(),
-                "execute" => self.execute_tool().ok(),
-                _ => None,
-            },
+            ServerMode::Code => self
+                .code_tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .cloned(),
             ServerMode::Tools => self
                 .catalog
                 .find(name)
@@ -250,6 +224,39 @@ impl S2McpServer {
             _ => Err(Error::forbidden()),
         }
     }
+}
+
+fn code_tools(policy: &Policy) -> Result<Vec<Tool>> {
+    let mut tools = vec![
+        Tool::new(
+            "search",
+            "Search the policy-filtered S2 TypeScript API. Returns complete declarations for the matched functions.",
+            json_object_schema::<SearchInput>()?,
+        )
+        .with_raw_output_schema(json_object_schema::<SearchOutput>()?)
+        .with_annotations(
+            ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        ),
+        Tool::new(
+            "execute",
+            "Execute isolated TypeScript defining `async function run()`. Use `search` first to discover S2 functions.",
+            json_object_schema::<ExecuteInput>()?,
+        )
+        .with_raw_output_schema(json_object_schema::<ExecuteOutput>()?)
+        .with_annotations(
+            ToolAnnotations::new()
+                .read_only(policy.readonly)
+                .destructive(policy.allows_destructive())
+                .idempotent(policy.readonly)
+                .open_world(true),
+        ),
+    ];
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(tools)
 }
 
 fn decode<T: DeserializeOwned>(arguments: Value) -> Result<T> {
