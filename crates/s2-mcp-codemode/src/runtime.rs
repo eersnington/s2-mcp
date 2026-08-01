@@ -131,21 +131,6 @@ struct SequencedCall {
     call: CallTrace,
 }
 
-#[op2]
-#[serde]
-fn op_codemode_extract_arguments<'s>(
-    state: Rc<RefCell<OpState>>,
-    scope: &mut v8::PinScope<'s, '_>,
-    value: v8::Local<'s, v8::Value>,
-) -> Result<serde_json::Value, JsErrorBox> {
-    let maximum_depth = state
-        .borrow()
-        .borrow::<RuntimeInvoker>()
-        .limits
-        .max_json_depth;
-    extract_json(scope, value, maximum_depth).map_err(extract_error)
-}
-
 #[op2(async)]
 #[serde]
 async fn op_codemode_invoke(
@@ -225,15 +210,6 @@ async fn op_codemode_invoke(
     result.map_err(|error| JsErrorBox::generic(error.message().to_owned()))
 }
 
-fn extract_error(error: JsonExtractError) -> JsErrorBox {
-    match error {
-        JsonExtractError::Depth { maximum } => {
-            public_error(PublicError::JsonDepthExceeded { maximum })
-        }
-        JsonExtractError::NotSerializable => JsErrorBox::generic("value is not JSON-serializable"),
-    }
-}
-
 fn public_error(error: PublicError) -> JsErrorBox {
     JsErrorBox::generic(error.to_string())
 }
@@ -244,7 +220,7 @@ fn runtime_error(_error: RuntimeError) -> JsErrorBox {
 
 deno_core::extension!(
     codemode_runtime,
-    ops = [op_codemode_extract_arguments, op_codemode_invoke],
+    ops = [op_codemode_invoke],
     options = { invoker: RuntimeInvoker },
     state = |state, options| state.put(options.invoker),
 );
