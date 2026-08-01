@@ -8,7 +8,7 @@ use std::{
 use s2_sdk::types::{
     AccountEndpoint, BasinEndpoint, Compression, EncryptionKey, S2Config, S2Endpoints,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::error::{ConfigError, Error, Result};
 
@@ -53,9 +53,29 @@ impl From<S2Compression> for Compression {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct S2Configuration {
+    access_token: Option<String>,
+    endpoints: ConnectionEndpoints,
+    encryption_key: Option<String>,
+    compression: Option<S2Compression>,
+    ssl_no_verify: Option<bool>,
+    environment: ConnectionEnvironment,
+}
+
+#[derive(Debug, Clone, Default)]
+enum ConnectionEndpoints {
+    #[default]
+    Cloud,
+    Custom {
+        account: String,
+        basin: String,
+    },
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
+struct SerializedConfiguration {
     access_token: Option<String>,
     account_endpoint: Option<String>,
     basin_endpoint: Option<String>,
@@ -63,6 +83,65 @@ pub struct S2Configuration {
     compression: Option<S2Compression>,
     ssl_no_verify: Option<bool>,
     environment: ConnectionEnvironment,
+}
+
+impl Serialize for S2Configuration {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let (account_endpoint, basin_endpoint) = match &self.endpoints {
+            ConnectionEndpoints::Cloud => (None, None),
+            ConnectionEndpoints::Custom { account, basin } => {
+                (Some(account.clone()), Some(basin.clone()))
+            }
+        };
+        SerializedConfiguration {
+            access_token: self.access_token.clone(),
+            account_endpoint,
+            basin_endpoint,
+            encryption_key: self.encryption_key.clone(),
+            compression: self.compression,
+            ssl_no_verify: self.ssl_no_verify,
+            environment: self.environment,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for S2Configuration {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let serialized = SerializedConfiguration::deserialize(deserializer)?;
+        let endpoints = match (serialized.account_endpoint, serialized.basin_endpoint) {
+            (Some(account), Some(basin)) => ConnectionEndpoints::Custom { account, basin },
+            (None, None) => ConnectionEndpoints::Cloud,
+            _ => {
+                return Err(de::Error::custom(
+                    "account_endpoint and basin_endpoint must be configured together",
+                ));
+            }
+        };
+        let environment = match &endpoints {
+            ConnectionEndpoints::Cloud => ConnectionEnvironment::Cloud,
+            ConnectionEndpoints::Custom { .. } => match serialized.environment {
+                ConnectionEnvironment::ManagedLite => ConnectionEnvironment::ManagedLite,
+                ConnectionEnvironment::Cloud | ConnectionEnvironment::CustomEndpoint => {
+                    ConnectionEnvironment::CustomEndpoint
+                }
+            },
+        };
+        Ok(Self {
+            access_token: serialized.access_token,
+            endpoints,
+            encryption_key: serialized.encryption_key,
+            compression: serialized.compression,
+            ssl_no_verify: serialized.ssl_no_verify,
+            environment,
+        })
+    }
 }
 
 pub(crate) type ConnectionConfig = S2Configuration;
@@ -81,8 +160,10 @@ impl S2Configuration {
         basin_endpoint: impl Into<String>,
     ) -> Self {
         Self {
-            account_endpoint: Some(account_endpoint.into()),
-            basin_endpoint: Some(basin_endpoint.into()),
+            endpoints: ConnectionEndpoints::Custom {
+                account: account_endpoint.into(),
+                basin: basin_endpoint.into(),
+            },
             environment: ConnectionEnvironment::CustomEndpoint,
             ..self
         }
@@ -133,8 +214,7 @@ impl S2Configuration {
         };
 
         override_string("S2_ACCESS_TOKEN", &mut config.access_token)?;
-        config.account_endpoint = None;
-        config.basin_endpoint = None;
+        config.endpoints = ConnectionEndpoints::Cloud;
         config.environment = ConnectionEnvironment::Cloud;
         override_string("S2_ENCRYPTION_KEY", &mut config.encryption_key)?;
         override_bool("S2_SSL_NO_VERIFY", &mut config.ssl_no_verify)?;
@@ -213,8 +293,8 @@ impl S2Configuration {
             .with_request_timeout(Duration::from_secs(30))
             .with_compression(self.compression.unwrap_or_default().into());
 
-        match (&self.account_endpoint, &self.basin_endpoint) {
-            (Some(account), Some(basin)) => {
+        match &self.endpoints {
+            ConnectionEndpoints::Custom { account, basin } => {
                 let account = AccountEndpoint::new(account)
                     .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
                 let basin = BasinEndpoint::new(basin)
@@ -223,12 +303,7 @@ impl S2Configuration {
                     .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
                 config = config.with_endpoints(endpoints);
             }
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(Error::Config(ConfigError::Invalid(
-                    "account_endpoint and basin_endpoint must be configured together".to_owned(),
-                )));
-            }
-            (None, None) => {}
+            ConnectionEndpoints::Cloud => {}
         }
 
         if self.ssl_no_verify == Some(true) {
@@ -240,9 +315,9 @@ impl S2Configuration {
     }
 
     pub(crate) fn account_endpoint_label(&self) -> &str {
-        match (&self.account_endpoint, &self.basin_endpoint) {
-            (Some(account), Some(_)) => account,
-            _ => "S2 Cloud default",
+        match &self.endpoints {
+            ConnectionEndpoints::Custom { account, .. } => account,
+            ConnectionEndpoints::Cloud => "S2 Cloud default",
         }
     }
 
@@ -251,9 +326,9 @@ impl S2Configuration {
     }
 
     pub(crate) fn basin_endpoint_label(&self) -> &str {
-        match (&self.account_endpoint, &self.basin_endpoint) {
-            (Some(_), Some(basin)) => basin,
-            _ => "S2 Cloud default",
+        match &self.endpoints {
+            ConnectionEndpoints::Custom { basin, .. } => basin,
+            ConnectionEndpoints::Cloud => "S2 Cloud default",
         }
     }
 
@@ -314,4 +389,42 @@ fn config_path() -> Result<PathBuf> {
     path.push("s2");
     path.push("config.toml");
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectionEnvironment, S2Configuration};
+
+    #[test]
+    fn persisted_custom_endpoints_form_one_valid_state() -> Result<(), toml::de::Error> {
+        let configuration: S2Configuration = toml::from_str(
+            r#"
+access_token = "token"
+account_endpoint = "https://account.example"
+basin_endpoint = "https://{basin}.example"
+"#,
+        )?;
+
+        assert_eq!(
+            configuration.environment_label(),
+            ConnectionEnvironment::CustomEndpoint.label()
+        );
+        assert_eq!(
+            configuration.basin_endpoint_label(),
+            "https://{basin}.example"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_partial_endpoint_pair_is_rejected() {
+        let result = toml::from_str::<S2Configuration>(
+            r#"
+access_token = "token"
+account_endpoint = "https://account.example"
+"#,
+        );
+
+        assert!(result.is_err());
+    }
 }

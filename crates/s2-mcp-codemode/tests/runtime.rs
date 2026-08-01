@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use s2_mcp_codemode::{CodeMode, Error, FunctionDescriptor, Invoker, Limits};
+use s2_mcp_codemode::{CodeMode, Error, FunctionDescriptor, InvokeError, Invoker, Limits};
 use serde_json::json;
 
 fn code_mode() -> Result<CodeMode, Error> {
@@ -81,5 +81,35 @@ async fn synchronous_javascript_is_terminated_by_the_tokio_watchdog() -> Result<
         result,
         Err(Error::ExecutionTimeout { seconds: 1 })
     ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_invoke_error_is_structured_in_javascript() -> Result<(), Error> {
+    let output = code_mode()?
+        .execute(
+            r#"async function run() {
+                try { await S2.test({}); }
+                catch (error) { return { name: error.name, code: error.code, remediation: error.remediation }; }
+            }"#,
+            Invoker::new(|_, _| async {
+                Err(InvokeError::public_with_details(
+                    "test_failed",
+                    "test failed",
+                    Some("retry the test".to_owned()),
+                ))
+            }),
+            Limits::default(),
+        )
+        .await?;
+
+    assert_eq!(
+        output.output,
+        Some(json!({
+            "name": "S2InvokeError",
+            "code": "test_failed",
+            "remediation": "retry the test"
+        }))
+    );
     Ok(())
 }

@@ -66,12 +66,8 @@ impl Operations {
 
     pub(crate) async fn get_basin_config(&self, arguments: Value) -> Result<Value> {
         let request: GetBasinConfigRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
-        let config = self
-            .s2()
-            .await?
-            .get_basin_config(request.basin.parse()?)
-            .await?;
+        let basin_name = self.basin_name(&request.basin)?;
+        let config = self.s2().await?.get_basin_config(basin_name).await?;
         serialize(GetBasinConfigOutput {
             basin: request.basin,
             config: config.into(),
@@ -80,8 +76,7 @@ impl Operations {
 
     pub(crate) async fn ensure_basin(&self, arguments: Value) -> Result<Value> {
         let request: EnsureBasinRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
-        let mut input = EnsureBasinInput::new(request.basin.parse()?);
+        let mut input = EnsureBasinInput::new(self.basin_name(&request.basin)?);
         if let Some(config) = request.config {
             input = input.with_config(config.try_into()?);
         }
@@ -102,14 +97,15 @@ impl Operations {
 
     pub(crate) async fn reconfigure_basin(&self, arguments: Value) -> Result<Value> {
         let request: ReconfigureBasinRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
         if request.config.is_empty() {
             return Err(Error::invalid_arguments(
                 "config must specify at least one field".to_owned(),
             ));
         }
-        let input =
-            ReconfigureBasinInput::new(request.basin.parse()?, request.config.try_into_sdk()?);
+        let input = ReconfigureBasinInput::new(
+            self.basin_name(&request.basin)?,
+            request.config.try_into_sdk()?,
+        );
         let config = self.s2().await?.reconfigure_basin(input).await?;
         serialize(GetBasinConfigOutput {
             basin: request.basin,
@@ -119,8 +115,7 @@ impl Operations {
 
     pub(crate) async fn delete_basin(&self, arguments: Value) -> Result<Value> {
         let request: DeleteBasinRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
-        let input = DeleteBasinInput::new(request.basin.parse()?)
+        let input = DeleteBasinInput::new(self.basin_name(&request.basin)?)
             .with_ignore_not_found(request.ignore_not_found);
         self.s2().await?.delete_basin(input).await?;
         serialize(DeleteResourceOutput { accepted: true })
@@ -149,11 +144,11 @@ impl Operations {
             }
             GetMetricsRequest::Basin { basin, set, query } => {
                 self.policy.enforce_operation(Access::Read, Scope::Basin)?;
-                self.policy.enforce_basin(&basin)?;
+                let basin_name = self.basin_name(&basin)?;
                 let set = basin_metric_set(set, &query)?;
                 self.s2()
                     .await?
-                    .get_basin_metrics(GetBasinMetricsInput::new(basin.parse()?, set))
+                    .get_basin_metrics(GetBasinMetricsInput::new(basin_name, set))
                     .await?
             }
             GetMetricsRequest::Stream {
@@ -163,12 +158,12 @@ impl Operations {
                 query,
             } => {
                 self.policy.enforce_operation(Access::Read, Scope::Stream)?;
-                self.policy.enforce_basin(&basin)?;
+                let basin_name = self.basin_name(&basin)?;
                 let set = stream_metric_set(set, &query)?;
                 self.s2()
                     .await?
                     .get_stream_metrics(GetStreamMetricsInput::new(
-                        basin.parse()?,
+                        basin_name,
                         stream.parse()?,
                         set,
                     ))

@@ -29,13 +29,12 @@ const DEFAULT_RETENTION_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 impl Operations {
     pub(crate) async fn list_streams(&self, arguments: Value) -> Result<Value> {
         let request: ListStreamsRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
         let limit = bounded(
             request.limit.unwrap_or(MAX_LIST_LIMIT),
             MAX_LIST_LIMIT,
             "limit",
         )?;
-        let basin = self.s2().await?.basin(request.basin.parse()?);
+        let basin = self.basin(&request.basin).await?;
         let mut input = s2_sdk::types::ListStreamsInput::new().with_limit(limit);
         if let Some(prefix) = request.prefix {
             input = input.with_prefix(prefix.parse()?);
@@ -61,8 +60,7 @@ impl Operations {
 
     pub(crate) async fn get_stream_config(&self, arguments: Value) -> Result<Value> {
         let request: GetStreamConfigRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
-        let basin = self.s2().await?.basin(request.basin.parse()?);
+        let basin = self.basin(&request.basin).await?;
         let config = basin.get_stream_config(request.stream.parse()?).await?;
         serialize(GetStreamConfigOutput {
             basin: request.basin,
@@ -73,8 +71,7 @@ impl Operations {
 
     pub(crate) async fn ensure_stream(&self, arguments: Value) -> Result<Value> {
         let request: EnsureStreamRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
-        let basin = self.s2().await?.basin(request.basin.parse()?);
+        let basin = self.basin(&request.basin).await?;
         let mut input = EnsureStreamInput::new(request.stream.parse()?);
         if let Some(config) = request.config {
             input = input.with_config(config.try_into()?);
@@ -93,13 +90,12 @@ impl Operations {
 
     pub(crate) async fn reconfigure_stream(&self, arguments: Value) -> Result<Value> {
         let request: ReconfigureStreamRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
         if request.config.is_empty() {
             return Err(Error::invalid_arguments(
                 "config must specify at least one field".to_owned(),
             ));
         }
-        let basin = self.s2().await?.basin(request.basin.parse()?);
+        let basin = self.basin(&request.basin).await?;
         let input =
             ReconfigureStreamInput::new(request.stream.parse()?, request.config.try_into_sdk()?);
         let config = basin.reconfigure_stream(input).await?;
@@ -112,8 +108,7 @@ impl Operations {
 
     pub(crate) async fn delete_stream(&self, arguments: Value) -> Result<Value> {
         let request: DeleteStreamRequest = parse(arguments)?;
-        self.policy.enforce_basin(&request.basin)?;
-        let basin = self.s2().await?.basin(request.basin.parse()?);
+        let basin = self.basin(&request.basin).await?;
         let input = DeleteStreamInput::new(request.stream.parse()?)
             .with_ignore_not_found(request.ignore_not_found);
         basin.delete_stream(input).await?;
@@ -140,9 +135,9 @@ impl Operations {
             let (identity, differences) = match resource {
                 DesiredResource::Basin { basin, desired } => {
                     self.policy.enforce_operation(Access::Read, Scope::Basin)?;
-                    self.policy.enforce_basin(&basin)?;
+                    let basin_name = self.basin_name(&basin)?;
                     desired.validate()?;
-                    let actual = self.s2().await?.get_basin_config(basin.parse()?).await?;
+                    let actual = self.s2().await?.get_basin_config(basin_name).await?;
                     let differences = basin_config_differences(&actual.into(), &desired)?;
                     (ResourceIdentityOutput::Basin { basin }, differences)
                 }
@@ -152,12 +147,10 @@ impl Operations {
                     desired,
                 } => {
                     self.policy.enforce_operation(Access::Read, Scope::Stream)?;
-                    self.policy.enforce_basin(&basin)?;
                     desired.validate()?;
                     let actual = self
-                        .s2()
+                        .basin(&basin)
                         .await?
-                        .basin(basin.parse()?)
                         .get_stream_config(stream.parse()?)
                         .await?;
                     let differences = stream_config_differences(&actual.into(), &desired, "")?;
@@ -988,4 +981,27 @@ where
 
 const fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NullableUpdate;
+
+    #[test]
+    fn nullable_update_distinguishes_omitted_clear_and_value() -> serde_json::Result<()> {
+        #[derive(serde::Deserialize)]
+        struct Input {
+            #[serde(default)]
+            value: NullableUpdate<u64>,
+        }
+
+        let omitted: Input = serde_json::from_str("{}")?;
+        let clear: Input = serde_json::from_str(r#"{"value":null}"#)?;
+        let value: Input = serde_json::from_str(r#"{"value":42}"#)?;
+
+        assert_eq!(omitted.value, NullableUpdate::Omitted);
+        assert_eq!(clear.value, NullableUpdate::Clear);
+        assert_eq!(value.value, NullableUpdate::Value(42));
+        Ok(())
+    }
 }

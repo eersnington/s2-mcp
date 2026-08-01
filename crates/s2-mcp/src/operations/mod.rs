@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use s2_sdk::{
-    S2,
-    types::{EncryptionKey, S2DateTime},
+    S2, S2Basin, S2Stream,
+    types::{BasinName, EncryptionKey, S2DateTime},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -42,6 +42,23 @@ impl Operations {
         self.s2
             .get_or_try_init(|| async { Ok(S2::new(self.connection.sdk_config()?)?) })
             .await
+    }
+
+    pub(super) fn basin_name(&self, basin: &str) -> Result<BasinName> {
+        self.policy.enforce_basin(basin)?;
+        Ok(basin.parse()?)
+    }
+
+    pub(super) async fn basin(&self, basin: &str) -> Result<S2Basin> {
+        Ok(self.s2().await?.basin(self.basin_name(basin)?))
+    }
+
+    pub(super) async fn stream(&self, basin: &str, stream: &str) -> Result<S2Stream> {
+        let stream = self.basin(basin).await?.stream(stream.parse()?);
+        Ok(match &self.encryption_key {
+            Some(encryption_key) => stream.with_encryption_key(encryption_key.clone()),
+            None => stream,
+        })
     }
 
     pub(crate) async fn dispatch(&self, id: OperationId, arguments: Value) -> Result<Value> {

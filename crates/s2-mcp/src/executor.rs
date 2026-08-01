@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStdout, Command},
     sync::{OnceCell, OwnedSemaphorePermit, Semaphore},
 };
 
@@ -23,22 +23,16 @@ const MAX_CHILD_FRAME_BYTES: usize = 512 * 1024;
 const EXECUTOR_COMMAND: &str = "__execute";
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum WorkerRequest {
-    Initialize {
-        connection: ConnectionConfig,
-        policy: Policy,
-        limits: Limits,
-    },
-    Execute {
-        input: ExecuteInput,
-    },
+struct WorkerRequest {
+    connection: ConnectionConfig,
+    policy: Policy,
+    limits: Limits,
+    input: ExecuteInput,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum WorkerResponse {
-    Ready,
     Success { output: ExecuteOutput },
     Error { error: ErrorReport },
 }
@@ -70,14 +64,20 @@ impl ExecutorPool {
 
     pub(crate) async fn execute(&self, input: ExecuteInput) -> Result<ExecuteOutput> {
         let _permit = self.acquire_permit().await?;
-        let mut worker = Worker::spawn(
-            &self.executable,
-            &self.connection,
-            &self.policy,
-            self.limits,
-        )
-        .await?;
-        worker.execute(input, self.limits).await
+        let execution = async {
+            let mut worker = Worker::spawn(
+                &self.executable,
+                self.connection.clone(),
+                self.policy.clone(),
+                self.limits,
+                input,
+            )
+            .await?;
+            worker.response(self.limits).await
+        };
+        tokio::time::timeout(self.limits.supervisor_timeout(), execution)
+            .await
+            .map_err(|_| Error::execution_timeout(self.limits.execution_timeout.as_secs()))?
     }
 
     async fn acquire_permit(&self) -> Result<OwnedSemaphorePermit> {
@@ -90,17 +90,17 @@ impl ExecutorPool {
 }
 
 struct Worker {
-    child: Child,
-    stdin: ChildStdin,
+    _child: Child,
     stdout: ChildStdout,
 }
 
 impl Worker {
     async fn spawn(
         executable: &Path,
-        connection: &ConnectionConfig,
-        policy: &Policy,
+        connection: ConnectionConfig,
+        policy: Policy,
         limits: Limits,
+        input: ExecuteInput,
     ) -> Result<Self> {
         let mut child = Command::new(executable)
             .arg(EXECUTOR_COMMAND)
@@ -111,7 +111,7 @@ impl Worker {
             .kill_on_drop(true)
             .spawn()
             .map_err(Error::start_executor)?;
-        let Some(stdin) = child.stdin.take() else {
+        let Some(mut stdin) = child.stdin.take() else {
             return Err(Error::executor_io(io::Error::other(
                 "execution process stdin was not available",
             )));
@@ -122,55 +122,28 @@ impl Worker {
             )));
         };
 
-        let mut worker = Self {
-            child,
-            stdin,
-            stdout,
-        };
         write_frame(
-            &mut worker.stdin,
-            &WorkerRequest::Initialize {
-                connection: connection.clone(),
-                policy: policy.clone(),
+            &mut stdin,
+            &WorkerRequest {
+                connection,
+                policy,
                 limits,
+                input,
             },
         )
         .await?;
-        let response = read_frame(&mut worker.stdout).await?;
-        let Some(WorkerResponse::Ready) = response else {
-            return Err(Error::executor_failed(
-                "execution worker did not complete initialization",
-            ));
-        };
-        Ok(worker)
+        Ok(Self {
+            _child: child,
+            stdout,
+        })
     }
 
-    async fn execute(&mut self, input: ExecuteInput, limits: Limits) -> Result<ExecuteOutput> {
-        if let Err(error) = write_frame(&mut self.stdin, &WorkerRequest::Execute { input }).await {
-            self.abort();
-            return Err(error);
-        }
-
-        let response =
-            match tokio::time::timeout(limits.supervisor_timeout(), read_frame(&mut self.stdout))
-                .await
-            {
-                Ok(Ok(Some(response))) => response,
-                Ok(Ok(None)) => {
-                    self.abort();
-                    return Err(Error::executor_failed(
-                        "execution worker closed before responding",
-                    ));
-                }
-                Ok(Err(error)) => {
-                    self.abort();
-                    return Err(error);
-                }
-                Err(_) => {
-                    self.abort();
-                    return Err(Error::execution_timeout(limits.execution_timeout.as_secs()));
-                }
-            };
+    async fn response(&mut self, limits: Limits) -> Result<ExecuteOutput> {
+        let Some(response) = read_frame(&mut self.stdout).await? else {
+            return Err(Error::executor_failed(
+                "execution worker closed before responding",
+            ));
+        };
 
         match response {
             WorkerResponse::Success { output } => Ok(output),
@@ -185,20 +158,6 @@ impl Worker {
                     Error::executor_failed("execution worker returned an internal error")
                 }
             }),
-            WorkerResponse::Ready => {
-                self.abort();
-                Err(Error::executor_failed(
-                    "execution worker returned an unexpected initialization response",
-                ))
-            }
-        }
-    }
-
-    fn abort(&mut self) {
-        if let Err(error) = self.child.start_kill()
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::debug!(error = %error, "failed to terminate execution worker");
         }
     }
 }
@@ -206,29 +165,18 @@ impl Worker {
 pub(crate) async fn run_child() -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
-    let Some(request) = read_frame(&mut stdin).await? else {
-        return Err(Error::executor_failed(
-            "execution worker received no initialization request",
-        ));
-    };
-    let WorkerRequest::Initialize {
+    let Some(WorkerRequest {
         connection,
         policy,
         limits,
-    } = request
+        input,
+    }) = read_frame(&mut stdin).await?
     else {
         return Err(Error::executor_failed(
-            "execution worker was not initialized before use",
+            "execution worker received no request",
         ));
     };
     let state = ChildState::new(connection, policy, limits)?;
-    write_frame(&mut stdout, &WorkerResponse::Ready).await?;
-
-    let Some(WorkerRequest::Execute { input }) = read_frame(&mut stdin).await? else {
-        return Err(Error::executor_failed(
-            "execution worker received no execution request",
-        ));
-    };
     let response = match execute_child_request(&state, input).await {
         Ok(output) => WorkerResponse::Success { output },
         Err(error) => WorkerResponse::Error {
@@ -285,7 +233,7 @@ async fn execute_child_request(state: &ChildState, input: ExecuteInput) -> Resul
                 })
                 .await
                 .map_err(map_invoke_error)?;
-            let arguments = arguments.unwrap_or_else(empty_object);
+            let arguments = arguments.unwrap_or_else(|| Value::Object(Default::default()));
             operations
                 .dispatch(operation_id, arguments)
                 .await
@@ -309,10 +257,6 @@ fn map_invoke_error(error: Error) -> InvokeError {
     } else {
         InvokeError::private()
     }
-}
-
-fn empty_object() -> Value {
-    Value::Object(Default::default())
 }
 
 async fn write_frame<W, T>(writer: &mut W, value: &T) -> Result<()>

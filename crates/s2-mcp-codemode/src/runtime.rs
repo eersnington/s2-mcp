@@ -16,12 +16,14 @@ use deno_core::{
     op2, v8,
 };
 use deno_error::JsErrorBox;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::{sync::Semaphore, task::JoinHandle};
 
-use crate::{CallOutcome, CallTrace, Error as PublicError, Invoker, Limits, validate_json_depth};
+use crate::{
+    CallOutcome, CallTrace, Error as PublicError, InvokeError, Invoker, Limits, validate_json_depth,
+};
 
 const MODULE_SPECIFIER: &str = "file:///execute.js";
 const STARTUP_SNAPSHOT: &[u8] =
@@ -137,7 +139,7 @@ async fn op_codemode_invoke(
     state: Rc<RefCell<OpState>>,
     #[string] operation: String,
     #[serde] arguments: Option<serde_json::Value>,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<InvokeResponse, JsErrorBox> {
     let runtime_invoker = {
         let state = state.borrow();
         state.borrow::<RuntimeInvoker>().clone()
@@ -207,7 +209,32 @@ async fn op_codemode_invoke(
     runtime_invoker
         .finish(sequence, public_name, started_at.elapsed(), outcome)
         .map_err(runtime_error)?;
-    result.map_err(|error| JsErrorBox::generic(error.message().to_owned()))
+    Ok(match result {
+        Ok(value) => InvokeResponse::Success { value },
+        Err(InvokeError::Public(diagnostic)) => InvokeResponse::Error {
+            code: diagnostic.code,
+            message: diagnostic.message,
+            remediation: diagnostic.remediation,
+        },
+        Err(InvokeError::Private) => InvokeResponse::Error {
+            code: "operation_failed".to_owned(),
+            message: "host operation failed".to_owned(),
+            remediation: None,
+        },
+    })
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum InvokeResponse {
+    Success {
+        value: Value,
+    },
+    Error {
+        code: String,
+        message: String,
+        remediation: Option<String>,
+    },
 }
 
 fn public_error(error: PublicError) -> JsErrorBox {
@@ -349,7 +376,6 @@ pub(crate) async fn execute(
                 &invoker,
                 None,
                 Some(core_error_message(&error)),
-                limits,
             );
         }
     };
@@ -372,7 +398,7 @@ pub(crate) async fn execute(
         None
     };
     watchdog.check()?;
-    finish(&mut runtime, &invoker, output, runtime_error, limits)
+    finish(&mut runtime, &invoker, output, runtime_error)
 }
 
 fn finish(
@@ -380,10 +406,8 @@ fn finish(
     invoker: &RuntimeInvoker,
     output: Option<Value>,
     runtime_error: Option<String>,
-    limits: Limits,
 ) -> Result<RuntimeExecution, RuntimeError> {
-    let (mut stdout, mut stderr, capture_truncated) = capture_console(runtime)?;
-    let defensive_truncation = bound_streams(&mut stdout, &mut stderr, limits.max_console_bytes);
+    let (stdout, stderr, capture_truncated) = capture_console(runtime)?;
     let (calls, trace_truncated) = invoker.captured_calls()?;
     Ok(RuntimeExecution {
         success: runtime_error.is_none(),
@@ -392,7 +416,7 @@ fn finish(
         stdout,
         stderr,
         calls,
-        truncated: capture_truncated || defensive_truncation || trace_truncated,
+        truncated: capture_truncated || trace_truncated,
     })
 }
 
@@ -603,26 +627,4 @@ fn core_error_kind_message(error: &CoreErrorKind) -> String {
         CoreErrorKind::CouldNotExecute { error, .. } => core_error_kind_message(error),
         _ => error.to_string(),
     }
-}
-
-fn bound_streams(stdout: &mut String, stderr: &mut String, maximum: usize) -> bool {
-    if stdout.len().saturating_add(stderr.len()) <= maximum {
-        return false;
-    }
-    let stdout_truncated = truncate_utf8(stdout, maximum);
-    let remaining = maximum.saturating_sub(stdout.len());
-    let stderr_truncated = truncate_utf8(stderr, remaining);
-    stdout_truncated || stderr_truncated
-}
-
-fn truncate_utf8(value: &mut String, maximum: usize) -> bool {
-    if value.len() <= maximum {
-        return false;
-    }
-    let mut boundary = maximum;
-    while boundary > 0 && !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    value.truncate(boundary);
-    true
 }

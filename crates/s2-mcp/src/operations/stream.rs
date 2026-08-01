@@ -44,19 +44,6 @@ impl Operations {
         )
         .await
     }
-
-    pub(super) async fn stream(&self, basin: &str, stream: &str) -> Result<S2Stream> {
-        self.policy.enforce_basin(basin)?;
-        let stream = self
-            .s2()
-            .await?
-            .basin(basin.parse()?)
-            .stream(stream.parse()?);
-        Ok(match &self.encryption_key {
-            Some(encryption_key) => stream.with_encryption_key(encryption_key.clone()),
-            None => stream,
-        })
-    }
 }
 
 async fn append_command(

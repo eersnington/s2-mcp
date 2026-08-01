@@ -151,13 +151,6 @@ impl InvokeError {
     pub const fn private() -> Self {
         Self::Private
     }
-
-    pub(crate) fn message(&self) -> &str {
-        match self {
-            Self::Public(diagnostic) => &diagnostic.message,
-            Self::Private => "host operation failed",
-        }
-    }
 }
 
 pub type InvokeFuture = Pin<Box<dyn Future<Output = Result<Value, InvokeError>> + Send + 'static>>;

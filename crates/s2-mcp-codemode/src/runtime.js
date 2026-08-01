@@ -165,7 +165,20 @@
       if (typeof operation !== "function") {
         throw new Error("Code Mode invoke operation was not registered");
       }
-      invokeOperation = operation;
+      invokeOperation = async (name, input) => {
+        const response = await operation(name, input);
+        if (response.status === "success") return response.value;
+        const error = new Error(response.message);
+        error.name = "S2InvokeError";
+        Object.defineProperty(error, "code", { value: response.code, enumerable: true });
+        if (response.remediation !== null) {
+          Object.defineProperty(error, "remediation", {
+            value: response.remediation,
+            enumerable: true,
+          });
+        }
+        throw error;
+      };
       for (const name of [
         "Deno", "__bootstrap", "__infra", "process", "fetch", "WebSocket", "WebTransport",
         "EventSource", "XMLHttpRequest", "Request", "Response", "Headers", "FormData", "Worker",
