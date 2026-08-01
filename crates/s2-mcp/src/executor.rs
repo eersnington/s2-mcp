@@ -20,7 +20,7 @@ use tokio::{
 use crate::{
     catalog::Catalog,
     config::ConnectionConfig,
-    error::{Error, Result},
+    error::{Error, ErrorReport, Result},
     operations::Operations,
     policy::Policy,
 };
@@ -47,7 +47,7 @@ enum WorkerRequest {
 enum WorkerResponse {
     Ready,
     Success { output: ExecuteOutput },
-    Error { message: String },
+    Error { error: ErrorReport },
 }
 
 #[derive(Clone)]
@@ -62,7 +62,7 @@ pub(crate) struct ExecutorPool {
 
 impl ExecutorPool {
     pub(crate) async fn new(connection: ConnectionConfig, policy: Policy) -> Result<Self> {
-        let executable = Arc::new(env::current_exe().map_err(Error::StartExecutor)?);
+        let executable = Arc::new(env::current_exe().map_err(Error::start_executor)?);
         let mut workers = Vec::with_capacity(MAX_CONCURRENT_EXECUTORS);
         for _ in 0..MAX_CONCURRENT_EXECUTORS {
             let worker = Worker::spawn(&executable, &connection, &policy).await?;
@@ -95,7 +95,7 @@ impl ExecutorPool {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|error| Error::ExecutorFailed(format!("executor pool closed: {error}")))
+            .map_err(|error| Error::executor_failed(format!("executor pool closed: {error}")))
     }
 
     async fn acquire_worker(&self) -> WorkerLease<'_> {
@@ -157,14 +157,14 @@ impl Worker {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
-            .map_err(Error::StartExecutor)?;
+            .map_err(Error::start_executor)?;
         let Some(stdin) = child.stdin.take() else {
-            return Err(Error::ExecutorIo(io::Error::other(
+            return Err(Error::executor_io(io::Error::other(
                 "execution process stdin was not available",
             )));
         };
         let Some(stdout) = child.stdout.take() else {
-            return Err(Error::ExecutorIo(io::Error::other(
+            return Err(Error::executor_io(io::Error::other(
                 "execution process stdout was not available",
             )));
         };
@@ -185,7 +185,7 @@ impl Worker {
         .await?;
         let response = read_frame(&mut worker.stdout).await?;
         let Some(WorkerResponse::Ready) = response else {
-            return Err(Error::ExecutorFailed(
+            return Err(Error::executor_failed(
                 "execution worker did not complete initialization".to_owned(),
             ));
         };
@@ -224,7 +224,7 @@ impl Worker {
             Ok(Ok(None)) => {
                 self.abort();
                 return WorkerExecution {
-                    result: Err(Error::ExecutorFailed(
+                    result: Err(Error::executor_failed(
                         "execution worker closed before responding".to_owned(),
                     )),
                     reusable: false,
@@ -240,9 +240,9 @@ impl Worker {
             Err(_) => {
                 self.abort();
                 return WorkerExecution {
-                    result: Err(Error::ExecutionTimeout {
-                        seconds: Limits::default().execution_timeout.as_secs(),
-                    }),
+                    result: Err(Error::execution_timeout(
+                        Limits::default().execution_timeout.as_secs(),
+                    )),
                     reusable: false,
                 };
             }
@@ -253,14 +253,19 @@ impl Worker {
                 result: Ok(output),
                 reusable: true,
             },
-            WorkerResponse::Error { message } => WorkerExecution {
-                result: Err(Error::CodeMode(message)),
+            WorkerResponse::Error { error } => WorkerExecution {
+                result: Err(match error {
+                    ErrorReport::Public(diagnostic) => Error::code_mode_with_diagnostic(diagnostic),
+                    ErrorReport::Private => {
+                        Error::executor_failed("execution worker returned an internal error")
+                    }
+                }),
                 reusable: true,
             },
             WorkerResponse::Ready => {
                 self.abort();
                 WorkerExecution {
-                    result: Err(Error::ExecutorFailed(
+                    result: Err(Error::executor_failed(
                         "execution worker returned an unexpected initialization response"
                             .to_owned(),
                     )),
@@ -280,7 +285,7 @@ impl Worker {
             return Ok(());
         }
 
-        self.child.wait().await.map_err(Error::ExecutorIo)?;
+        self.child.wait().await.map_err(Error::executor_io)?;
         *self = Self::spawn(executable, connection, policy).await?;
         Ok(())
     }
@@ -299,12 +304,12 @@ pub(crate) async fn run_child() -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let Some(request) = read_frame(&mut stdin).await? else {
-        return Err(Error::ExecutorFailed(
+        return Err(Error::executor_failed(
             "execution worker received no initialization request".to_owned(),
         ));
     };
     let WorkerRequest::Initialize { connection, policy } = request else {
-        return Err(Error::ExecutorFailed(
+        return Err(Error::executor_failed(
             "execution worker was not initialized before use".to_owned(),
         ));
     };
@@ -317,7 +322,7 @@ pub(crate) async fn run_child() -> Result<()> {
         };
         match request {
             WorkerRequest::Initialize { .. } => {
-                return Err(Error::ExecutorFailed(
+                return Err(Error::executor_failed(
                     "execution worker received a duplicate initialization request".to_owned(),
                 ));
             }
@@ -325,7 +330,7 @@ pub(crate) async fn run_child() -> Result<()> {
                 let response = match execute_child_request(&state, input).await {
                     Ok(output) => WorkerResponse::Success { output },
                     Err(error) => WorkerResponse::Error {
-                        message: error.to_string(),
+                        error: error.report(),
                     },
                 };
                 write_frame(&mut stdout, &response).await?;
@@ -370,7 +375,7 @@ async fn execute_child_request(state: &ChildState, input: ExecuteInput) -> Resul
         async move {
             let operation_id = catalog
                 .find(&operation)
-                .ok_or(Error::Forbidden)
+                .ok_or_else(Error::forbidden)
                 .map_err(map_invoke_error)?
                 .id;
             let operations = operations
@@ -390,15 +395,18 @@ async fn execute_child_request(state: &ChildState, input: ExecuteInput) -> Resul
         .code_mode
         .execute(&input.code, invoker, Limits::default())
         .await
-        .map_err(|error| Error::CodeMode(error.to_string()))
+        .map_err(|error| Error::code_mode(error.to_string()))
 }
 
 fn map_invoke_error(error: Error) -> InvokeError {
-    match error {
-        Error::InvalidArguments(_) | Error::Forbidden | Error::BasinScope { .. } => {
-            InvokeError::public(error.to_string())
-        }
-        _ => InvokeError::private(),
+    if error.is_tool_failure() {
+        InvokeError::public_with_details(
+            error.code().as_str(),
+            error.to_string(),
+            error.remediation().map(str::to_owned),
+        )
+    } else {
+        InvokeError::private()
     }
 }
 
@@ -413,22 +421,19 @@ where
 {
     let payload = serde_json::to_vec(value)?;
     if payload.len() > MAX_CHILD_FRAME_BYTES {
-        return Err(Error::ExecutorRequestTooLarge {
-            maximum: MAX_CHILD_FRAME_BYTES,
-        });
+        return Err(Error::executor_request_too_large(MAX_CHILD_FRAME_BYTES));
     }
-    let length = u32::try_from(payload.len()).map_err(|_| Error::ExecutorRequestTooLarge {
-        maximum: MAX_CHILD_FRAME_BYTES,
-    })?;
+    let length = u32::try_from(payload.len())
+        .map_err(|_| Error::executor_request_too_large(MAX_CHILD_FRAME_BYTES))?;
     writer
         .write_all(&length.to_be_bytes())
         .await
-        .map_err(Error::ExecutorIo)?;
+        .map_err(Error::executor_io)?;
     writer
         .write_all(&payload)
         .await
-        .map_err(Error::ExecutorIo)?;
-    writer.flush().await.map_err(Error::ExecutorIo)
+        .map_err(Error::executor_io)?;
+    writer.flush().await.map_err(Error::executor_io)
 }
 
 async fn read_frame<R, T>(reader: &mut R) -> Result<Option<T>>
@@ -442,12 +447,12 @@ where
         let bytes_read = reader
             .read(&mut prefix[prefix_bytes..])
             .await
-            .map_err(Error::ExecutorIo)?;
+            .map_err(Error::executor_io)?;
         if bytes_read == 0 {
             if prefix_bytes == 0 {
                 return Ok(None);
             }
-            return Err(Error::ExecutorIo(io::Error::new(
+            return Err(Error::executor_io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "execution worker closed during a frame header",
             )));
@@ -457,16 +462,14 @@ where
 
     let length = u32::from_be_bytes(prefix) as usize;
     if length > MAX_CHILD_FRAME_BYTES {
-        return Err(Error::ExecutorRequestTooLarge {
-            maximum: MAX_CHILD_FRAME_BYTES,
-        });
+        return Err(Error::executor_request_too_large(MAX_CHILD_FRAME_BYTES));
     }
     let mut payload = vec![0_u8; length];
     reader
         .read_exact(&mut payload)
         .await
-        .map_err(Error::ExecutorIo)?;
+        .map_err(Error::executor_io)?;
     serde_json::from_slice(&payload)
         .map(Some)
-        .map_err(Error::Serialize)
+        .map_err(Error::from)
 }

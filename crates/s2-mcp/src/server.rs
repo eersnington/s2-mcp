@@ -118,21 +118,21 @@ impl S2McpServer {
 
     fn call_search(&self, arguments: Value) -> Result<Value> {
         validate_json_depth(&arguments, Limits::default().max_json_depth)
-            .map_err(|error| Error::CodeMode(error.to_string()))?;
+            .map_err(|error| Error::code_mode(error.to_string()))?;
         let input = decode(arguments)?;
         Ok(serde_json::to_value(self.catalog.search(input)?)?)
     }
 
     fn prepare_execute(&self, arguments: Value) -> Result<ExecuteInput> {
         validate_json_depth(&arguments, Limits::default().max_json_depth)
-            .map_err(|error| Error::CodeMode(error.to_string()))?;
+            .map_err(|error| Error::code_mode(error.to_string()))?;
         decode(arguments)
     }
 
     fn prepare_tool(&self, name: &str, arguments: Value) -> Result<(OperationId, Value)> {
         validate_json_depth(&arguments, Limits::default().max_json_depth)
-            .map_err(|error| Error::CodeMode(error.to_string()))?;
-        let operation_id = self.catalog.find(name).ok_or(Error::Forbidden)?.id;
+            .map_err(|error| Error::code_mode(error.to_string()))?;
+        let operation_id = self.catalog.find(name).ok_or_else(Error::forbidden)?.id;
         Ok((operation_id, arguments))
     }
 
@@ -208,13 +208,16 @@ impl ServerHandler for S2McpServer {
         }
         let arguments = Value::Object(request.arguments.unwrap_or_default());
         let result = self.dispatch_tool(&name, arguments, &context).await;
-        Ok(match result {
-            Ok(value) => CallToolResult::structured(value).into(),
-            Err(error) => CallToolResult::structured_error(serde_json::json!({
-                "error": error.to_string(),
-            }))
-            .into(),
-        })
+        match result {
+            Ok(value) => Ok(CallToolResult::structured(value).into()),
+            Err(error) if error.is_tool_failure() => {
+                Ok(CallToolResult::structured_error(serde_json::json!({
+                    "error": error.diagnostic(),
+                }))
+                .into())
+            }
+            Err(error) => Err(internal_error(error)),
+        }
     }
 }
 
@@ -232,7 +235,7 @@ impl S2McpServer {
                 let connection = self.runtime.configuration().await?.clone();
                 tokio::select! {
                     biased;
-                    _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
+                    _ = context.ct.cancelled() => Err(Error::execution_cancelled()),
                     result = self.execute_code(input, &connection) => result,
                 }
             }
@@ -241,17 +244,17 @@ impl S2McpServer {
                 let operations = self.resolve_operations().await?;
                 tokio::select! {
                     biased;
-                    _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
+                    _ = context.ct.cancelled() => Err(Error::execution_cancelled()),
                     result = operations.dispatch(operation_id, arguments) => result,
                 }
             }
-            _ => Err(Error::Forbidden),
+            _ => Err(Error::forbidden()),
         }
     }
 }
 
 fn decode<T: DeserializeOwned>(arguments: Value) -> Result<T> {
-    serde_json::from_value(arguments).map_err(|error| Error::InvalidArguments(error.to_string()))
+    serde_json::from_value(arguments).map_err(|error| Error::invalid_arguments(error.to_string()))
 }
 
 fn internal_error(error: Error) -> McpError {

@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    error::{Error, Result},
+    error::{ConfigError, Error, Result},
     operation_registry,
     policy::{Access, Policy, Scope},
 };
@@ -62,7 +62,7 @@ impl Catalog {
     pub(crate) fn search(&self, input: SearchInput) -> Result<SearchOutput> {
         self.code_mode
             .search(input)
-            .map_err(|error| Error::CodeMode(error.to_string()))
+            .map_err(|error| Error::code_mode(error.to_string()))
     }
 }
 
@@ -82,10 +82,10 @@ fn build_code_mode(operations: &[Operation]) -> Result<CodeMode> {
                 input_schema,
                 output_schema,
             )
-            .map_err(|error| Error::CodeMode(error.to_string()))
+            .map_err(|error| Error::code_mode(error.to_string()))
         })
         .collect::<Result<Vec<_>>>()?;
-    CodeMode::new(descriptors).map_err(|error| Error::CodeMode(error.to_string()))
+    CodeMode::new(descriptors).map_err(|error| Error::code_mode(error.to_string()))
 }
 
 pub(crate) fn operation<I, O>(
@@ -115,9 +115,9 @@ where
 pub(crate) fn json_object_schema<T: JsonSchema>() -> Result<Arc<JsonObject>> {
     let schema = serde_json::to_value(schemars::schema_for!(T))?;
     let Value::Object(object) = schema else {
-        return Err(Error::InvalidConfig(
+        return Err(Error::Config(ConfigError::Invalid(
             "generated JSON Schema was not an object".to_owned(),
-        ));
+        )));
     };
     Ok(Arc::new(object))
 }

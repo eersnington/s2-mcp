@@ -53,7 +53,7 @@ impl Operations {
             input = input.with_start_after(start_after.parse()?);
         }
 
-        let page = self.s2.list_basins(input).await?;
+        let page = self.s2().await?.list_basins(input).await?;
         let next_cursor = page
             .has_more
             .then(|| page.values.last().map(|basin| basin.name.to_string()))
@@ -67,7 +67,11 @@ impl Operations {
     pub(crate) async fn get_basin_config(&self, arguments: Value) -> Result<Value> {
         let request: GetBasinConfigRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
-        let config = self.s2.get_basin_config(request.basin.parse()?).await?;
+        let config = self
+            .s2()
+            .await?
+            .get_basin_config(request.basin.parse()?)
+            .await?;
         serialize(GetBasinConfigOutput {
             basin: request.basin,
             config: config.into(),
@@ -85,7 +89,7 @@ impl Operations {
             input = input.with_location(location)?;
         }
 
-        let (outcome, basin) = match self.s2.ensure_basin(input).await? {
+        let (outcome, basin) = match self.s2().await?.ensure_basin(input).await? {
             EnsureOutput::Created(basin) => (EnsureOutcomeOutput::Created, basin),
             EnsureOutput::ConfigUpdated(basin) => (EnsureOutcomeOutput::ConfigUpdated, basin),
             EnsureOutput::ConfigUnchanged(basin) => (EnsureOutcomeOutput::ConfigUnchanged, basin),
@@ -100,13 +104,13 @@ impl Operations {
         let request: ReconfigureBasinRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
         if request.config.is_empty() {
-            return Err(Error::InvalidArguments(
+            return Err(Error::invalid_arguments(
                 "config must specify at least one field".to_owned(),
             ));
         }
         let input =
             ReconfigureBasinInput::new(request.basin.parse()?, request.config.try_into_sdk()?);
-        let config = self.s2.reconfigure_basin(input).await?;
+        let config = self.s2().await?.reconfigure_basin(input).await?;
         serialize(GetBasinConfigOutput {
             basin: request.basin,
             config: config.into(),
@@ -118,13 +122,16 @@ impl Operations {
         self.policy.enforce_basin(&request.basin)?;
         let input = DeleteBasinInput::new(request.basin.parse()?)
             .with_ignore_not_found(request.ignore_not_found);
-        self.s2.delete_basin(input).await?;
+        self.s2().await?.delete_basin(input).await?;
         serialize(DeleteResourceOutput { accepted: true })
     }
 
     pub(crate) async fn revoke_access_token(&self, arguments: Value) -> Result<Value> {
         let request: RevokeAccessTokenRequest = parse(arguments)?;
-        self.s2.revoke_access_token(request.id.parse()?).await?;
+        self.s2()
+            .await?
+            .revoke_access_token(request.id.parse()?)
+            .await?;
         serialize(RevokeAccessTokenOutput { revoked: true })
     }
 
@@ -135,7 +142,8 @@ impl Operations {
                 self.policy
                     .enforce_operation(Access::Read, Scope::Account)?;
                 let set = account_metric_set(set, &query)?;
-                self.s2
+                self.s2()
+                    .await?
                     .get_account_metrics(GetAccountMetricsInput::new(set))
                     .await?
             }
@@ -143,7 +151,8 @@ impl Operations {
                 self.policy.enforce_operation(Access::Read, Scope::Basin)?;
                 self.policy.enforce_basin(&basin)?;
                 let set = basin_metric_set(set, &query)?;
-                self.s2
+                self.s2()
+                    .await?
                     .get_basin_metrics(GetBasinMetricsInput::new(basin.parse()?, set))
                     .await?
             }
@@ -156,7 +165,8 @@ impl Operations {
                 self.policy.enforce_operation(Access::Read, Scope::Stream)?;
                 self.policy.enforce_basin(&basin)?;
                 let set = stream_metric_set(set, &query)?;
-                self.s2
+                self.s2()
+                    .await?
                     .get_stream_metrics(GetStreamMetricsInput::new(
                         basin.parse()?,
                         stream.parse()?,
@@ -340,7 +350,7 @@ pub(crate) struct MetricQueryDto {
 impl MetricQueryDto {
     fn time_range_without_interval(&self, sampling_seconds: Option<u32>) -> Result<TimeRange> {
         if self.interval.is_some() {
-            return Err(Error::InvalidArguments(
+            return Err(Error::invalid_arguments(
                 "interval is not supported for this metric set".to_owned(),
             ));
         }
@@ -367,19 +377,19 @@ impl MetricQueryDto {
             .checked_sub(self.start)
             .filter(|duration| *duration > 0)
         else {
-            return Err(Error::InvalidArguments(
+            return Err(Error::invalid_arguments(
                 "metric query end must be greater than start".to_owned(),
             ));
         };
         if duration > MAX_METRIC_RANGE_SECONDS {
-            return Err(Error::InvalidArguments(format!(
+            return Err(Error::invalid_arguments(format!(
                 "metric query range cannot exceed {MAX_METRIC_RANGE_SECONDS} seconds"
             )));
         }
         if let Some(sampling_seconds) = sampling_seconds
             && duration.div_ceil(sampling_seconds) > MAX_METRIC_POINTS_PER_SERIES
         {
-            return Err(Error::InvalidArguments(format!(
+            return Err(Error::invalid_arguments(format!(
                 "metric query cannot request more than {MAX_METRIC_POINTS_PER_SERIES} points per series"
             )));
         }

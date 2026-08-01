@@ -50,10 +50,12 @@ fn managed_development_defers_container_start_until_code_execution() -> TestResu
         json!({ "code": "async function run() { return await S2.connectionInfo({}); }" }),
     )?;
     assert!(
-        output["error"]
+        output["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("Could not start S2 Lite"))
     );
+    assert_eq!(output["error"]["code"], json!("managed_lite_unavailable"));
+    assert!(output["error"]["remediation"].is_string());
     Ok(())
 }
 
@@ -67,10 +69,11 @@ fn managed_development_defers_container_start_until_tools_call() -> TestResult {
 
     let output = session.call_tool("connection_info", json!({}))?;
     assert!(
-        output["error"]
+        output["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("Could not start S2 Lite"))
     );
+    assert_eq!(output["error"]["code"], json!("managed_lite_unavailable"));
     Ok(())
 }
 
@@ -171,10 +174,12 @@ fn syntax_and_invalid_arguments_prevent_execution() -> TestResult {
     )?;
 
     assert!(
-        output["error"]
+        output["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("TypeScript could not be parsed"))
     );
+    assert_eq!(output["error"]["code"], json!("code_mode_failed"));
+    assert!(output["error"]["remediation"].is_string());
 
     let output = session.call_tool(
         "execute",
@@ -213,9 +218,10 @@ fn executor_terminates_infinite_program_at_production_deadline() -> TestResult {
     )?;
 
     assert_eq!(
-        output["error"],
+        output["error"]["message"],
         json!("code execution timed out after 30 seconds")
     );
+    assert_eq!(output["error"]["code"], json!("execution_timeout"));
     Ok(())
 }
 

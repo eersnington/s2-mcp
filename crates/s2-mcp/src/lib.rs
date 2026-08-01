@@ -12,7 +12,10 @@ mod policy;
 mod server;
 
 pub use config::{S2Compression, S2Configuration};
-pub use error::{Error, Result};
+pub use error::{
+    ConfigError, Error, ErrorCode, ErrorDiagnostic, ExecutionError, PolicyError, ProtocolError,
+    RequestError, Result, SandboxError, ServiceError,
+};
 pub use launch::{DevSource, LaunchIntent, ResolvedRuntime};
 pub use mode::ServerMode;
 pub use policy::Policy;
@@ -28,12 +31,12 @@ pub async fn serve_runtime(options: ServerOptions, runtime: ResolvedRuntime) -> 
     let service = server
         .serve(stdio())
         .await
-        .map_err(|error| Error::Mcp(error.to_string()))?;
+        .map_err(|error| Error::Protocol(error::ProtocolError::Mcp(error.to_string())))?;
     service
         .waiting()
         .await
         .map(|_| ())
-        .map_err(|error| Error::Mcp(error.to_string()))
+        .map_err(|error| Error::Protocol(error::ProtocolError::Mcp(error.to_string())))
 }
 
 #[doc(hidden)]

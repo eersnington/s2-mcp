@@ -35,7 +35,7 @@ impl Operations {
             MAX_LIST_LIMIT,
             "limit",
         )?;
-        let basin = self.s2.basin(request.basin.parse()?);
+        let basin = self.s2().await?.basin(request.basin.parse()?);
         let mut input = s2_sdk::types::ListStreamsInput::new().with_limit(limit);
         if let Some(prefix) = request.prefix {
             input = input.with_prefix(prefix.parse()?);
@@ -62,7 +62,7 @@ impl Operations {
     pub(crate) async fn get_stream_config(&self, arguments: Value) -> Result<Value> {
         let request: GetStreamConfigRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
-        let basin = self.s2.basin(request.basin.parse()?);
+        let basin = self.s2().await?.basin(request.basin.parse()?);
         let config = basin.get_stream_config(request.stream.parse()?).await?;
         serialize(GetStreamConfigOutput {
             basin: request.basin,
@@ -74,7 +74,7 @@ impl Operations {
     pub(crate) async fn ensure_stream(&self, arguments: Value) -> Result<Value> {
         let request: EnsureStreamRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
-        let basin = self.s2.basin(request.basin.parse()?);
+        let basin = self.s2().await?.basin(request.basin.parse()?);
         let mut input = EnsureStreamInput::new(request.stream.parse()?);
         if let Some(config) = request.config {
             input = input.with_config(config.try_into()?);
@@ -95,11 +95,11 @@ impl Operations {
         let request: ReconfigureStreamRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
         if request.config.is_empty() {
-            return Err(Error::InvalidArguments(
+            return Err(Error::invalid_arguments(
                 "config must specify at least one field".to_owned(),
             ));
         }
-        let basin = self.s2.basin(request.basin.parse()?);
+        let basin = self.s2().await?.basin(request.basin.parse()?);
         let input =
             ReconfigureStreamInput::new(request.stream.parse()?, request.config.try_into_sdk()?);
         let config = basin.reconfigure_stream(input).await?;
@@ -113,7 +113,7 @@ impl Operations {
     pub(crate) async fn delete_stream(&self, arguments: Value) -> Result<Value> {
         let request: DeleteStreamRequest = parse(arguments)?;
         self.policy.enforce_basin(&request.basin)?;
-        let basin = self.s2.basin(request.basin.parse()?);
+        let basin = self.s2().await?.basin(request.basin.parse()?);
         let input = DeleteStreamInput::new(request.stream.parse()?)
             .with_ignore_not_found(request.ignore_not_found);
         basin.delete_stream(input).await?;
@@ -142,7 +142,7 @@ impl Operations {
                     self.policy.enforce_operation(Access::Read, Scope::Basin)?;
                     self.policy.enforce_basin(&basin)?;
                     desired.validate()?;
-                    let actual = self.s2.get_basin_config(basin.parse()?).await?;
+                    let actual = self.s2().await?.get_basin_config(basin.parse()?).await?;
                     let differences = basin_config_differences(&actual.into(), &desired)?;
                     (ResourceIdentityOutput::Basin { basin }, differences)
                 }
@@ -155,7 +155,8 @@ impl Operations {
                     self.policy.enforce_basin(&basin)?;
                     desired.validate()?;
                     let actual = self
-                        .s2
+                        .s2()
+                        .await?
                         .basin(basin.parse()?)
                         .get_stream_config(stream.parse()?)
                         .await?;
@@ -317,7 +318,7 @@ impl StreamConfigDto {
             self.retention_policy,
             Some(RetentionPolicyDto::Age { seconds: 0 })
         ) {
-            return Err(Error::InvalidArguments(
+            return Err(Error::invalid_arguments(
                 "retention_policy.age seconds must be greater than zero".to_owned(),
             ));
         }
@@ -442,7 +443,7 @@ pub(crate) enum RetentionPolicyDto {
 impl RetentionPolicyDto {
     fn try_into_sdk(self) -> Result<SdkRetentionPolicy> {
         match self {
-            Self::Age { seconds: 0 } => Err(Error::InvalidArguments(
+            Self::Age { seconds: 0 } => Err(Error::invalid_arguments(
                 "retention_policy.age seconds must be greater than zero".to_owned(),
             )),
             Self::Age { seconds } => Ok(SdkRetentionPolicy::Age(seconds)),
@@ -719,7 +720,7 @@ impl StreamReconfigurationDto {
             NullableUpdate::Clear => sdk.timestamping = None.into(),
             NullableUpdate::Value(timestamping) => {
                 if timestamping.is_empty() {
-                    return Err(Error::InvalidArguments(
+                    return Err(Error::invalid_arguments(
                         "timestamping must specify at least one field".to_owned(),
                     ));
                 }
@@ -731,7 +732,7 @@ impl StreamReconfigurationDto {
             NullableUpdate::Clear => sdk.delete_on_empty = None.into(),
             NullableUpdate::Value(delete_on_empty) => {
                 if delete_on_empty.is_empty() {
-                    return Err(Error::InvalidArguments(
+                    return Err(Error::invalid_arguments(
                         "delete_on_empty must specify min_age_seconds".to_owned(),
                     ));
                 }
@@ -774,7 +775,7 @@ impl BasinReconfigurationDto {
             NullableUpdate::Clear => sdk.default_stream_config = None.into(),
             NullableUpdate::Value(default_stream_config) => {
                 if default_stream_config.is_empty() {
-                    return Err(Error::InvalidArguments(
+                    return Err(Error::invalid_arguments(
                         "default_stream_config must specify at least one field".to_owned(),
                     ));
                 }

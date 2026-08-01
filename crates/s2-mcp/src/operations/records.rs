@@ -32,7 +32,7 @@ const MAX_APPEND_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 impl Operations {
     pub(crate) async fn read_records(&self, arguments: Value) -> Result<Value> {
         let request: ReadRecordsRequest = parse(arguments)?;
-        let stream = self.stream(&request.basin, &request.stream)?;
+        let stream = self.stream(&request.basin, &request.stream).await?;
         let bounds = read_bounds(request.limit, request.max_bytes, request.max_output_bytes)?;
         let fallback_next_seq_num = request.start.fallback_next_seq_num();
         let input = read_input(
@@ -51,7 +51,7 @@ impl Operations {
 
     pub(crate) async fn wait_for_records(&self, arguments: Value) -> Result<Value> {
         let request: WaitForRecordsRequest = parse(arguments)?;
-        let stream = self.stream(&request.basin, &request.stream)?;
+        let stream = self.stream(&request.basin, &request.stream).await?;
         let bounds = read_bounds(request.limit, request.max_bytes, request.max_output_bytes)?;
         let timeout_seconds = bounded_wait_timeout(request.timeout_seconds)?;
         let fallback_next_seq_num = request.start.fallback_next_seq_num();
@@ -88,7 +88,7 @@ impl Operations {
     pub(crate) async fn append_records(&self, arguments: Value) -> Result<Value> {
         validate_append_request_size(&arguments)?;
         let request: AppendRecordsRequest = parse(arguments)?;
-        let stream = self.stream(&request.basin, &request.stream)?;
+        let stream = self.stream(&request.basin, &request.stream).await?;
         validate_append_batch(&request.records)?;
 
         let records = request
@@ -98,7 +98,7 @@ impl Operations {
             .collect::<Result<Vec<_>>>()?;
         let batch = AppendRecordBatch::try_from_iter(records)?;
         if batch.metered_bytes() > MAX_APPEND_METERED_BYTES {
-            return Err(Error::InvalidArguments(format!(
+            return Err(Error::invalid_arguments(format!(
                 "records cannot exceed {MAX_APPEND_METERED_BYTES} decoded metered bytes"
             )));
         }
@@ -142,7 +142,7 @@ fn read_bounds(
 
 fn bounded_read_output_bytes(value: usize) -> Result<usize> {
     if !(MIN_READ_OUTPUT_BYTES..=MAX_READ_OUTPUT_BYTES).contains(&value) {
-        return Err(Error::InvalidArguments(format!(
+        return Err(Error::invalid_arguments(format!(
             "max_output_bytes must be between {MIN_READ_OUTPUT_BYTES} and {MAX_READ_OUTPUT_BYTES}"
         )));
     }
@@ -151,7 +151,7 @@ fn bounded_read_output_bytes(value: usize) -> Result<usize> {
 
 fn bounded_wait_timeout(value: u32) -> Result<u32> {
     if !(1..=MAX_WAIT_SECONDS).contains(&value) {
-        return Err(Error::InvalidArguments(format!(
+        return Err(Error::invalid_arguments(format!(
             "timeout_seconds must be between 1 and {MAX_WAIT_SECONDS}"
         )));
     }
@@ -337,7 +337,7 @@ fn base64_decoded_size(value: &str) -> Result<usize> {
 }
 
 fn invalid_base64() -> Error {
-    Error::InvalidArguments("record data contains invalid base64".to_owned())
+    Error::invalid_arguments("record data contains invalid base64".to_owned())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -415,7 +415,7 @@ impl HeaderInput {
 }
 
 fn append_size_overflow() -> Error {
-    Error::InvalidArguments("record batch size overflowed".to_owned())
+    Error::invalid_arguments("record batch size overflowed".to_owned())
 }
 
 fn validate_append_batch(records: &[AppendRecordInput]) -> Result<()> {
@@ -425,7 +425,7 @@ fn validate_append_batch(records: &[AppendRecordInput]) -> Result<()> {
             .ok_or_else(append_size_overflow)
     })?;
     if metered_bytes > MAX_APPEND_METERED_BYTES {
-        return Err(Error::InvalidArguments(format!(
+        return Err(Error::invalid_arguments(format!(
             "records cannot exceed {MAX_APPEND_METERED_BYTES} decoded metered bytes"
         )));
     }
@@ -435,7 +435,7 @@ fn validate_append_batch(records: &[AppendRecordInput]) -> Result<()> {
 fn validate_append_request_size(arguments: &Value) -> Result<()> {
     let size = serialized_size(arguments)?;
     if size > MAX_APPEND_REQUEST_BYTES {
-        return Err(Error::InvalidArguments(format!(
+        return Err(Error::invalid_arguments(format!(
             "append request cannot exceed {MAX_APPEND_REQUEST_BYTES} encoded bytes"
         )));
     }
@@ -625,7 +625,7 @@ fn bounded_record_prefix(
         }
     }
     best.ok_or_else(|| {
-        Error::InvalidArguments(
+        Error::invalid_arguments(
             "max_output_bytes is too small to encode response metadata".to_owned(),
         )
     })

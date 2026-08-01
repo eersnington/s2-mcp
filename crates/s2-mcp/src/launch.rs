@@ -1,4 +1,4 @@
-use crate::{Error, Result, S2Configuration};
+use crate::{Error, Result, S2Configuration, error::ConfigError};
 use tokio::sync::OnceCell;
 
 const LITE_ACCESS_TOKEN: &str = "ignored";
@@ -67,9 +67,9 @@ impl ResolvedRuntime {
             RuntimeConnection::Managed(cell) => {
                 let managed = cell
                     .get_or_try_init(|| async {
-                        let lite = s2_testcontainers::S2Lite::start()
-                            .await
-                            .map_err(|source| Error::StartManagedLite { source })?;
+                        let lite = s2_testcontainers::S2Lite::start().await.map_err(|source| {
+                            Error::Config(ConfigError::StartManagedLite { source })
+                        })?;
                         let configuration = S2Configuration::for_shared_endpoint(
                             lite.endpoint(),
                             LITE_ACCESS_TOKEN,

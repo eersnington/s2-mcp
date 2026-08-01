@@ -14,13 +14,13 @@ use crate::error::Result;
 impl Operations {
     pub(crate) async fn check_tail(&self, arguments: Value) -> Result<Value> {
         let request: StreamRequest = parse(arguments)?;
-        let stream = self.stream(&request.basin, &request.stream)?;
+        let stream = self.stream(&request.basin, &request.stream).await?;
         serialize(PositionOutput::from(stream.check_tail().await?))
     }
 
     pub(crate) async fn fence_stream(&self, arguments: Value) -> Result<Value> {
         let request: FenceStreamRequest = parse(arguments)?;
-        let stream = self.stream(&request.basin, &request.stream)?;
+        let stream = self.stream(&request.basin, &request.stream).await?;
         let fencing_token: FencingToken = request.fencing_token.parse()?;
         let command = CommandRecord::fence(fencing_token);
         append_command(
@@ -34,7 +34,7 @@ impl Operations {
 
     pub(crate) async fn trim_stream(&self, arguments: Value) -> Result<Value> {
         let request: TrimStreamRequest = parse(arguments)?;
-        let stream = self.stream(&request.basin, &request.stream)?;
+        let stream = self.stream(&request.basin, &request.stream).await?;
         let command = CommandRecord::trim(request.trim_point);
         append_command(
             stream,
@@ -45,9 +45,13 @@ impl Operations {
         .await
     }
 
-    pub(super) fn stream(&self, basin: &str, stream: &str) -> Result<S2Stream> {
+    pub(super) async fn stream(&self, basin: &str, stream: &str) -> Result<S2Stream> {
         self.policy.enforce_basin(basin)?;
-        let stream = self.s2.basin(basin.parse()?).stream(stream.parse()?);
+        let stream = self
+            .s2()
+            .await?
+            .basin(basin.parse()?)
+            .stream(stream.parse()?);
         Ok(match &self.encryption_key {
             Some(encryption_key) => stream.with_encryption_key(encryption_key.clone()),
             None => stream,

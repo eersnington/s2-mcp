@@ -10,7 +10,7 @@ use s2_sdk::types::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::{ConfigError, Error, Result};
 
 const USER_AGENT: &str = concat!("s2-mcp/", env!("CARGO_PKG_VERSION"));
 const DEVELOPMENT_ACCESS_TOKEN: &str = "ignored";
@@ -116,13 +116,17 @@ impl S2Configuration {
     pub fn load_cloud() -> Result<Self> {
         let path = config_path()?;
         let mut config = if path.exists() {
-            let contents = fs::read_to_string(&path).map_err(|source| Error::ReadConfig {
-                path: path.clone(),
-                source,
+            let contents = fs::read_to_string(&path).map_err(|source| {
+                Error::Config(ConfigError::Read {
+                    path: path.clone(),
+                    source,
+                })
             })?;
-            toml::from_str(&contents).map_err(|source| Error::ParseConfig {
-                path: path.clone(),
-                source,
+            toml::from_str(&contents).map_err(|source| {
+                Error::Config(ConfigError::Parse {
+                    path: path.clone(),
+                    source,
+                })
             })?
         } else {
             Self::default()
@@ -140,9 +144,9 @@ impl S2Configuration {
                 "gzip" => S2Compression::Gzip,
                 "zstd" => S2Compression::Zstd,
                 _ => {
-                    return Err(Error::InvalidConfig(format!(
+                    return Err(Error::Config(ConfigError::Invalid(format!(
                         "S2_COMPRESSION must be one of none, gzip, or zstd; received `{compression}`"
-                    )));
+                    ))));
                 }
             });
         }
@@ -162,14 +166,14 @@ impl S2Configuration {
 
     pub fn load_development_environment() -> Result<Self> {
         let account = environment_value("S2_ACCOUNT_ENDPOINT")?.ok_or_else(|| {
-            Error::InvalidConfig(
+            Error::Config(ConfigError::Invalid(
                 "--from-env requires S2_ACCOUNT_ENDPOINT and S2_BASIN_ENDPOINT".to_owned(),
-            )
+            ))
         })?;
         let basin = environment_value("S2_BASIN_ENDPOINT")?.ok_or_else(|| {
-            Error::InvalidConfig(
+            Error::Config(ConfigError::Invalid(
                 "--from-env requires S2_ACCOUNT_ENDPOINT and S2_BASIN_ENDPOINT".to_owned(),
-            )
+            ))
         })?;
         let access_token = environment_value("S2_ACCESS_TOKEN")?
             .unwrap_or_else(|| DEVELOPMENT_ACCESS_TOKEN.to_owned());
@@ -186,7 +190,7 @@ impl S2Configuration {
         environment: ConnectionEnvironment,
     ) -> Result<Self> {
         S2Endpoints::for_endpoint(endpoint)
-            .map_err(|error| Error::InvalidConfig(error.to_string()))?;
+            .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
         Ok(Self::new(access_token)
             .with_endpoints(endpoint, endpoint)
             .with_environment(environment))
@@ -203,7 +207,7 @@ impl S2Configuration {
         let access_token = self
             .access_token
             .as_deref()
-            .ok_or(Error::MissingAccessToken)?;
+            .ok_or(Error::Config(ConfigError::MissingAccessToken))?;
         let mut config = S2Config::new(access_token)
             .with_user_agent(USER_AGENT)?
             .with_request_timeout(Duration::from_secs(30))
@@ -212,11 +216,11 @@ impl S2Configuration {
         match (&self.account_endpoint, &self.basin_endpoint) {
             (Some(account), Some(basin)) => {
                 let account = AccountEndpoint::new(account)
-                    .map_err(|error| Error::InvalidConfig(error.to_string()))?;
+                    .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
                 let basin = BasinEndpoint::new(basin)
-                    .map_err(|error| Error::InvalidConfig(error.to_string()))?;
+                    .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
                 let endpoints = S2Endpoints::new(account, basin)
-                    .map_err(|error| Error::InvalidConfig(error.to_string()))?;
+                    .map_err(|error| Error::Config(ConfigError::Invalid(error.to_string())))?;
                 config = config.with_endpoints(endpoints);
             }
             (Some(_), None) => {
@@ -263,7 +267,9 @@ impl S2Configuration {
             .as_deref()
             .map(|key| {
                 key.parse().map_err(|error| {
-                    Error::InvalidConfig(format!("S2_ENCRYPTION_KEY is invalid: {error}"))
+                    Error::Config(ConfigError::Invalid(format!(
+                        "S2_ENCRYPTION_KEY is invalid: {error}"
+                    )))
                 })
             })
             .transpose()
@@ -274,7 +280,9 @@ fn environment_value(name: &'static str) -> Result<Option<String>> {
     match env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(VarError::NotPresent) => Ok(None),
-        Err(VarError::NotUnicode(_)) => Err(Error::InvalidEnvironment { name }),
+        Err(VarError::NotUnicode(_)) => {
+            Err(Error::Config(ConfigError::InvalidEnvironment { name }))
+        }
     }
 }
 
@@ -288,9 +296,9 @@ fn override_string(name: &'static str, target: &mut Option<String>) -> Result<()
 fn override_bool(name: &'static str, target: &mut Option<bool>) -> Result<()> {
     if let Some(value) = environment_value(name)? {
         *target = Some(value.parse().map_err(|_| {
-            Error::InvalidConfig(format!(
+            Error::Config(ConfigError::Invalid(format!(
                 "{name} must be either true or false; received `{value}`"
-            ))
+            )))
         })?);
     }
     Ok(())
@@ -298,7 +306,7 @@ fn override_bool(name: &'static str, target: &mut Option<bool>) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn config_path() -> Result<PathBuf> {
-    let mut path = dirs::config_dir().ok_or(Error::ConfigDirectoryNotFound)?;
+    let mut path = dirs::config_dir().ok_or(Error::Config(ConfigError::DirectoryNotFound))?;
     path.push("s2");
     path.push("config.toml");
     Ok(path)
@@ -306,7 +314,7 @@ fn config_path() -> Result<PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 fn config_path() -> Result<PathBuf> {
-    let mut path = dirs::home_dir().ok_or(Error::ConfigDirectoryNotFound)?;
+    let mut path = dirs::home_dir().ok_or(Error::Config(ConfigError::DirectoryNotFound))?;
     path.push(".config");
     path.push("s2");
     path.push("config.toml");

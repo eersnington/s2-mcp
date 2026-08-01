@@ -6,6 +6,7 @@ use s2_sdk::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use tokio::sync::OnceCell;
 
 use crate::{
     config::ConnectionConfig,
@@ -19,9 +20,8 @@ pub(crate) mod basin;
 pub(crate) mod records;
 pub(crate) mod stream;
 
-#[derive(Clone)]
 pub(crate) struct Operations {
-    pub(super) s2: S2,
+    pub(super) s2: OnceCell<S2>,
     pub(super) connection: ConnectionConfig,
     pub(super) encryption_key: Option<EncryptionKey>,
     pub(super) policy: Arc<Policy>,
@@ -30,13 +30,18 @@ pub(crate) struct Operations {
 impl Operations {
     pub(crate) fn new(connection: ConnectionConfig, policy: Arc<Policy>) -> Result<Self> {
         let encryption_key = connection.encryption_key()?;
-        let s2 = S2::new(connection.sdk_config()?)?;
         Ok(Self {
-            s2,
+            s2: OnceCell::new(),
             connection,
             encryption_key,
             policy,
         })
+    }
+
+    pub(super) async fn s2(&self) -> Result<&S2> {
+        self.s2
+            .get_or_try_init(|| async { Ok(S2::new(self.connection.sdk_config()?)?) })
+            .await
     }
 
     pub(crate) async fn dispatch(&self, id: OperationId, arguments: Value) -> Result<Value> {
@@ -45,7 +50,7 @@ impl Operations {
 }
 
 pub(super) fn parse<T: DeserializeOwned>(arguments: Value) -> Result<T> {
-    serde_json::from_value(arguments).map_err(|error| Error::InvalidArguments(error.to_string()))
+    serde_json::from_value(arguments).map_err(|error| Error::invalid_arguments(error.to_string()))
 }
 
 pub(super) fn serialize<T: Serialize>(value: T) -> Result<Value> {
@@ -54,7 +59,7 @@ pub(super) fn serialize<T: Serialize>(value: T) -> Result<Value> {
 
 pub(super) fn bounded(value: usize, maximum: usize, name: &str) -> Result<usize> {
     if value == 0 || value > maximum {
-        return Err(Error::InvalidArguments(format!(
+        return Err(Error::invalid_arguments(format!(
             "{name} must be between 1 and {maximum}"
         )));
     }

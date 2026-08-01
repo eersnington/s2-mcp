@@ -10,7 +10,8 @@ use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
 };
 use s2_mcp::{
-    DevSource, Error, LaunchIntent, Policy, ResolvedRuntime, Result, ServerMode, ServerOptions,
+    ConfigError, DevSource, Error, LaunchIntent, Policy, ResolvedRuntime, Result, ServerMode,
+    ServerOptions,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -238,22 +239,24 @@ async fn run_server(options: ServerOptions, intent: LaunchIntent) -> Result<()> 
 fn init_tracing(log_file: Option<&Path>) -> Result<()> {
     let environment_filter = EnvFilter::from_default_env();
     if let Some(path) = log_file {
-        let file = File::create(path).map_err(|source| Error::CreateLogFile {
-            path: path.to_owned(),
-            source,
+        let file = File::create(path).map_err(|source| {
+            Error::Config(ConfigError::CreateLogFile {
+                path: path.to_owned(),
+                source,
+            })
         })?;
         tracing_subscriber::fmt()
             .with_env_filter(environment_filter)
             .with_writer(file)
             .with_ansi(false)
             .try_init()
-            .map_err(|source| Error::InitializeLogging { source })
+            .map_err(|source| Error::Config(ConfigError::InitializeLogging { source }))
     } else {
         tracing_subscriber::fmt()
             .with_env_filter(environment_filter)
             .with_writer(io::stderr)
             .with_ansi(false)
             .try_init()
-            .map_err(|source| Error::InitializeLogging { source })
+            .map_err(|source| Error::Config(ConfigError::InitializeLogging { source }))
     }
 }

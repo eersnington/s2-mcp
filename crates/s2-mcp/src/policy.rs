@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, PolicyError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
@@ -56,7 +56,7 @@ impl Policy {
 
     pub(crate) fn enforce_operation(&self, access: Access, scope: Scope) -> Result<()> {
         if !self.allows(access, scope) {
-            return Err(Error::Forbidden);
+            return Err(Error::Policy(PolicyError::Forbidden));
         }
         Ok(())
     }
@@ -65,10 +65,10 @@ impl Policy {
         if let Some(allowed) = &self.basin
             && requested != allowed
         {
-            return Err(Error::BasinScope {
+            return Err(Error::Policy(PolicyError::BasinScope {
                 requested: requested.to_owned(),
                 allowed: allowed.clone(),
-            });
+            }));
         }
         Ok(())
     }

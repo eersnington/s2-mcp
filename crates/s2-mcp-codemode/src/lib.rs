@@ -112,14 +112,33 @@ impl Default for Limits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvokeDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub remediation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvokeError {
-    Public(String),
+    Public(InvokeDiagnostic),
     Private,
 }
 
 impl InvokeError {
     pub fn public(message: impl Into<String>) -> Self {
-        Self::Public(message.into())
+        Self::public_with_details("operation_failed", message, None)
+    }
+
+    pub fn public_with_details(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        remediation: Option<String>,
+    ) -> Self {
+        Self::Public(InvokeDiagnostic {
+            code: code.into(),
+            message: message.into(),
+            remediation,
+        })
     }
 
     pub const fn private() -> Self {
@@ -128,7 +147,7 @@ impl InvokeError {
 
     pub(crate) fn message(&self) -> &str {
         match self {
-            Self::Public(message) => message,
+            Self::Public(diagnostic) => &diagnostic.message,
             Self::Private => "host operation failed",
         }
     }
