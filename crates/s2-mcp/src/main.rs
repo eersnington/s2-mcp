@@ -231,7 +231,7 @@ fn launch_intent(dev: bool, endpoint: Option<String>, from_env: bool) -> LaunchI
 }
 
 async fn run_server(options: ServerOptions, intent: LaunchIntent) -> Result<()> {
-    let runtime = ResolvedRuntime::resolve(intent).await?;
+    let runtime = ResolvedRuntime::resolve(intent)?;
     s2_mcp::serve_runtime(options, runtime).await
 }
 

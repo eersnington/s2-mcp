@@ -13,7 +13,7 @@ use s2_mcp_codemode::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 
 use crate::{
     catalog::{Catalog, OperationId, json_object_schema},
@@ -37,6 +37,7 @@ pub struct S2McpServer {
     runtime: Arc<ResolvedRuntime>,
     catalog: Catalog,
     policy: Policy,
+    operations: Arc<OnceCell<Arc<Operations>>>,
     executor_permits: Arc<Semaphore>,
     surface_mode: ServerMode,
 }
@@ -51,14 +52,23 @@ impl S2McpServer {
             runtime,
             catalog,
             policy,
+            operations: Arc::new(OnceCell::new()),
             executor_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTORS)),
             surface_mode: options.mode,
         })
     }
 
-    async fn resolve_operations(&self) -> Result<Operations> {
-        let connection = self.runtime.configuration().await?;
-        Operations::new(connection.clone(), Arc::new(self.policy.clone()))
+    async fn resolve_operations(&self) -> Result<Arc<Operations>> {
+        self.operations
+            .get_or_try_init(|| async {
+                let connection = self.runtime.configuration().await?;
+                Ok(Arc::new(Operations::new(
+                    connection.clone(),
+                    Arc::new(self.policy.clone()),
+                )?))
+            })
+            .await
+            .map(Arc::clone)
     }
 
     fn tools(&self) -> Result<Vec<Tool>> {
@@ -178,10 +188,11 @@ impl ServerHandler for S2McpServer {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         match self.surface_mode {
-            ServerMode::Code => self
-                .tools()
-                .ok()
-                .and_then(|tools| tools.into_iter().find(|tool| tool.name == name)),
+            ServerMode::Code => match name {
+                "search" => self.search_tool().ok(),
+                "execute" => self.execute_tool().ok(),
+                _ => None,
+            },
             ServerMode::Tools => self
                 .catalog
                 .find(name)
@@ -199,37 +210,7 @@ impl ServerHandler for S2McpServer {
             return Err(McpError::invalid_params("tool not found", None));
         }
         let arguments = Value::Object(request.arguments.unwrap_or_default());
-        let result = match (self.surface_mode, name.as_str()) {
-            (ServerMode::Code, "search") => self.call_search(arguments),
-            (ServerMode::Code, "execute") => match self.prepare_execute(arguments) {
-                Err(error) => Err(error),
-                Ok(input) => match self.runtime.configuration().await {
-                    Err(error) => Err(error),
-                    Ok(connection) => {
-                        let connection = connection.clone();
-                        tokio::select! {
-                            biased;
-                            _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
-                            result = self.execute_code(input, &connection) => result,
-                        }
-                    }
-                },
-            },
-            (ServerMode::Tools, _) => match self.prepare_tool(&name, arguments) {
-                Err(error) => Err(error),
-                Ok((operation_id, arguments)) => match self.resolve_operations().await {
-                    Err(error) => Err(error),
-                    Ok(operations) => {
-                        tokio::select! {
-                            biased;
-                            _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
-                            result = operations.dispatch(operation_id, arguments) => result,
-                        }
-                    }
-                },
-            },
-            _ => Err(Error::Forbidden),
-        };
+        let result = self.dispatch_tool(&name, arguments, &context).await;
         Ok(match result {
             Ok(value) => CallToolResult::structured(value).into(),
             Err(error) => CallToolResult::structured_error(serde_json::json!({
@@ -237,6 +218,38 @@ impl ServerHandler for S2McpServer {
             }))
             .into(),
         })
+    }
+}
+
+impl S2McpServer {
+    async fn dispatch_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<Value> {
+        match (self.surface_mode, name) {
+            (ServerMode::Code, "search") => self.call_search(arguments),
+            (ServerMode::Code, "execute") => {
+                let input = self.prepare_execute(arguments)?;
+                let connection = self.runtime.configuration().await?.clone();
+                tokio::select! {
+                    biased;
+                    _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
+                    result = self.execute_code(input, &connection) => result,
+                }
+            }
+            (ServerMode::Tools, _) => {
+                let (operation_id, arguments) = self.prepare_tool(name, arguments)?;
+                let operations = self.resolve_operations().await?;
+                tokio::select! {
+                    biased;
+                    _ = context.ct.cancelled() => Err(Error::ExecutionCancelled),
+                    result = operations.dispatch(operation_id, arguments) => result,
+                }
+            }
+            _ => Err(Error::Forbidden),
+        }
     }
 }
 

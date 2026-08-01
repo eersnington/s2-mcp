@@ -42,7 +42,7 @@ struct ManagedConnection {
 }
 
 impl ResolvedRuntime {
-    pub async fn resolve(intent: LaunchIntent) -> Result<Self> {
+    pub fn resolve(intent: LaunchIntent) -> Result<Self> {
         match intent {
             LaunchIntent::Cloud => Ok(Self::ready(S2Configuration::load_cloud()?)),
             LaunchIntent::Dev(DevSource::Managed) => Ok(Self {
