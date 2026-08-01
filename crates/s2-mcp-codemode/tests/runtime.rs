@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 use s2_mcp_codemode::{CodeMode, Error, FunctionDescriptor, Invoker, Limits};
 use serde_json::json;
@@ -16,7 +17,7 @@ fn code_mode() -> Result<CodeMode, Error> {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deep_argument_does_not_call_invoker() -> Result<(), Error> {
     let calls = Arc::new(AtomicUsize::new(0));
     let invoker_calls = calls.clone();
@@ -41,7 +42,7 @@ async fn deep_argument_does_not_call_invoker() -> Result<(), Error> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deep_output_returns_json_depth_exceeded() -> Result<(), Error> {
     let limits = Limits {
         max_json_depth: 2,
@@ -58,6 +59,27 @@ async fn deep_output_returns_json_depth_exceeded() -> Result<(), Error> {
     assert!(matches!(
         result,
         Err(Error::JsonDepthExceeded { maximum: 2 })
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn synchronous_javascript_is_terminated_by_the_tokio_watchdog() -> Result<(), Error> {
+    let limits = Limits {
+        execution_timeout: Duration::from_secs(1),
+        ..Limits::default()
+    };
+    let result = code_mode()?
+        .execute(
+            "async function run() { while (true) {} }",
+            Invoker::new(|_, _| async { Ok(json!(null)) }),
+            limits,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(Error::ExecutionTimeout { seconds: 1 })
     ));
     Ok(())
 }

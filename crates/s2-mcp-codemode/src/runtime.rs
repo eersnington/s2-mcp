@@ -5,9 +5,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc,
     },
-    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -21,7 +19,7 @@ use deno_error::JsErrorBox;
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
-use tokio::sync::Semaphore;
+use tokio::{sync::Semaphore, task::JoinHandle};
 
 use crate::{CallOutcome, CallTrace, Error as PublicError, Invoker, Limits, validate_json_depth};
 
@@ -291,27 +289,20 @@ impl RuntimeError {
 }
 
 struct ExecutionWatchdog {
-    cancel: mpsc::Sender<()>,
-    thread: Option<JoinHandle<()>>,
+    task: JoinHandle<()>,
     timed_out: Arc<AtomicBool>,
 }
 
 impl ExecutionWatchdog {
     fn start(handle: v8::IsolateHandle, timeout: Duration) -> Self {
-        let (cancel, cancellation) = mpsc::channel();
         let timed_out = Arc::new(AtomicBool::new(false));
         let watchdog_timed_out = timed_out.clone();
-        let thread = thread::spawn(move || {
-            if cancellation.recv_timeout(timeout).is_err() {
-                watchdog_timed_out.store(true, Ordering::SeqCst);
-                handle.terminate_execution();
-            }
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            watchdog_timed_out.store(true, Ordering::SeqCst);
+            handle.terminate_execution();
         });
-        Self {
-            cancel,
-            thread: Some(thread),
-            timed_out,
-        }
+        Self { task, timed_out }
     }
 
     fn check(&self) -> Result<(), RuntimeError> {
@@ -325,10 +316,7 @@ impl ExecutionWatchdog {
 
 impl Drop for ExecutionWatchdog {
     fn drop(&mut self) {
-        let _ = self.cancel.send(());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.task.abort();
     }
 }
 

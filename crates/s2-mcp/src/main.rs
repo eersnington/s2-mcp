@@ -91,7 +91,7 @@ enum InternalCommand {
     Execute,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     if should_show_interactive_guidance(cli.command.as_ref(), io::stdin().is_terminal()) {
