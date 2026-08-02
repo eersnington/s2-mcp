@@ -33,4 +33,9 @@ for (const entry of fs.readdirSync("npm")) {
   if (manifest.version !== version) {
     throw new Error(`${manifest.name} version ${manifest.version} does not match ${version}`)
   }
+  for (const [dependency, dependencyVersion] of Object.entries(manifest.optionalDependencies ?? {})) {
+    if (dependencyVersion !== version) {
+      throw new Error(`${manifest.name} optional dependency ${dependency} version ${dependencyVersion} does not match ${version}`)
+    }
+  }
 }

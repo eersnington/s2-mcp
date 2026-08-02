@@ -10,16 +10,16 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-const [archive, version] = process.argv.slice(2)
-if (!archive || !version) {
-  throw new Error("usage: node scripts/smoke-npm-package.mjs <archive> <version>")
+const [archive, nativeArchive, version] = process.argv.slice(2)
+if (!archive || !nativeArchive || !version) {
+  throw new Error("usage: node scripts/smoke-npm-package.mjs <archive> <native-archive> <version>")
 }
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "s2-mcp-npm-smoke-"))
 try {
   const install = spawnSync(
     process.platform === "win32" ? "npm.cmd" : "npm",
-    ["install", "--ignore-scripts", "--no-save", "--prefix", directory, archive],
+    ["install", "--ignore-scripts", "--no-save", "--prefix", directory, archive, nativeArchive],
     {
       shell: process.platform === "win32",
       stdio: "inherit",

@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "s2-mcp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "assert_cmd",
  "base64ct",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "s2-mcp-codemode"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "deno_ast",
  "deno_core",

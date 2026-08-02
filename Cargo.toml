@@ -7,7 +7,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/eersnington/s2-mcp"
 rust-version = "1.89"
-version = "0.0.1"
+version = "0.0.2"
 
 [workspace.dependencies]
 base64ct = "1.8"
@@ -49,3 +49,6 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 lto = true
+codegen-units = 1
+opt-level = "z"
+strip = "symbols"

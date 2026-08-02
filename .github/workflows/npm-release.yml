@@ -75,6 +75,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --locked --release --package s2-mcp --target ${{ matrix.target }}
+      - run: node scripts/check-binary-size.mjs target/${{ matrix.target }}/release/${{ matrix.executable }}
       - shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.executable }} --version
       - uses: actions/upload-artifact@v4
@@ -109,14 +110,16 @@ jobs:
         with:
           name: native-win32-x64
           path: native/win32-x64
-      - run: node scripts/assemble-npm-package.mjs "${{ needs.validate.outputs.version }}" native dist/package/s2-mcp
+      - run: node scripts/assemble-npm-package.mjs "${{ needs.validate.outputs.version }}" native dist/package
       - run: |
           mkdir -p dist/npm
-          npm pack ./dist/package/s2-mcp --pack-destination dist/npm
+          for package in dist/package/*; do
+            npm pack "$package" --pack-destination dist/npm
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: npm-package
-          path: dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz
+          path: dist/npm/*.tgz
           if-no-files-found: error
 
   smoke:
@@ -146,7 +149,7 @@ jobs:
           name: npm-package
           path: dist/npm
       - shell: bash
-        run: node scripts/smoke-npm-package.mjs ./dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz "${{ needs.validate.outputs.version }}"
+        run: node scripts/smoke-npm-package.mjs ./dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz ./dist/npm/eersnington-s2-mcp-${{ matrix.platform }}-${{ needs.validate.outputs.version }}.tgz "${{ needs.validate.outputs.version }}"
 
   publish:
     name: Publish npm
@@ -167,4 +170,8 @@ jobs:
         with:
           name: npm-package
           path: dist/npm
-      - run: npm publish ./dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz --access public --provenance
+      - run: |
+          for package in dist/npm/eersnington-s2-mcp-*.tgz; do
+            npm publish "$package" --access public --provenance
+          done
+          npm publish ./dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz --access public --provenance

@@ -1,24 +1,34 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process"
-import { fileURLToPath } from "node:url"
+import { createRequire } from "node:module"
 
-const executables = {
-  "darwin-arm64": "../prebuilds/darwin-arm64/s2-mcp",
-  "darwin-x64": "../prebuilds/darwin-x64/s2-mcp",
-  "linux-x64": "../prebuilds/linux-x64/s2-mcp",
-  "win32-x64": "../prebuilds/win32-x64/s2-mcp.exe",
+const nativePackages = {
+  "darwin-arm64": "@eersnington/s2-mcp-darwin-arm64/bin/s2-mcp",
+  "darwin-x64": "@eersnington/s2-mcp-darwin-x64/bin/s2-mcp",
+  "linux-x64": "@eersnington/s2-mcp-linux-x64/bin/s2-mcp",
+  "win32-x64": "@eersnington/s2-mcp-win32-x64/bin/s2-mcp.exe",
 }
 
 const platform = `${process.platform}-${process.arch}`
-const executable = executables[platform]
-if (!executable) {
+const nativePackage = nativePackages[platform]
+if (!nativePackage) {
   console.error(
-    `s2-mcp does not support ${platform}. Supported platforms: ${Object.keys(executables).join(", ")}.`,
+    `s2-mcp does not support ${platform}. Supported platforms: ${Object.keys(nativePackages).join(", ")}.`,
   )
   process.exitCode = 1
 } else {
-  const child = spawn(fileURLToPath(new URL(executable, import.meta.url)), process.argv.slice(2), {
+  let executable
+  try {
+    executable = createRequire(import.meta.url).resolve(nativePackage)
+  } catch {
+    console.error(
+      `s2-mcp could not find its ${platform} executable. Reinstall s2-mcp without --no-optional so npm can install the native package.`,
+    )
+    process.exit(1)
+  }
+
+  const child = spawn(executable, process.argv.slice(2), {
     env: process.env,
     stdio: "inherit",
     windowsHide: true,

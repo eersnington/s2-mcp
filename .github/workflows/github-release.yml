@@ -70,6 +70,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --locked --release --package s2-mcp --target ${{ matrix.target }}
+      - run: node scripts/check-binary-size.mjs target/${{ matrix.target }}/release/${{ matrix.executable }}
       - shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.executable }} --version
       - if: matrix.archive == 'tar'
