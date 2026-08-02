@@ -1,8 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
-use std::time::Duration;
 
 use s2_mcp_codemode::{CodeMode, Error, FunctionDescriptor, InvokeError, Invoker, Limits};
 use serde_json::json;

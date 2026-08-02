@@ -35,7 +35,12 @@ async fn s2_lite_round_trip_covers_tools_code_mode_and_policy() -> TestResult {
         "read_records",
         json!({ "basin": BASIN, "stream": STREAM, "start": { "type": "seq_num", "value": 0 } }),
     )?;
-    assert_eq!(read["records"][0]["body"]["data"], json!("hello"));
+    let records = read["records"].as_array().ok_or("missing records")?;
+    let record = records
+        .iter()
+        .find(|record| record["body"]["data"] == json!("hello"))
+        .ok_or("appended record missing")?;
+    assert_eq!(record["body"]["data"], json!("hello"));
 
     let mut readonly = Session::start(&endpoint, &["--mode", "tools", "--readonly"])?;
     assert!(

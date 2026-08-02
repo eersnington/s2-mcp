@@ -1,5 +1,6 @@
-use crate::{Error, Result, S2Configuration, error::ConfigError};
 use tokio::sync::OnceCell;
+
+use crate::{Error, Result, S2Configuration, error::ConfigError};
 
 const LITE_ACCESS_TOKEN: &str = "ignored";
 

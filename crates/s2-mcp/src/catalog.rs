@@ -6,13 +6,12 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
+pub(crate) use crate::operation_registry::OperationId;
 use crate::{
     error::{ConfigError, Error, Result},
     operation_registry,
     policy::{Access, Policy, Scope},
 };
-
-pub(crate) use crate::operation_registry::OperationId;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Operation {
