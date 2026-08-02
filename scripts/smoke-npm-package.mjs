@@ -15,9 +15,10 @@ if (!archive || !version) {
   throw new Error("usage: node scripts/smoke-npm-package.mjs <archive> <version>")
 }
 
+const npm = process.platform === "win32" ? "npm.cmd" : "npm"
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "s2-mcp-npm-smoke-"))
 try {
-  execFileSync("npm", ["install", "--ignore-scripts", "--no-save", "--prefix", directory, archive], {
+  execFileSync(npm, ["install", "--ignore-scripts", "--no-save", "--prefix", directory, archive], {
     stdio: "inherit",
   })
   const launcher = path.join(directory, "node_modules", "s2-mcp", "bin", "s2-mcp.mjs")
