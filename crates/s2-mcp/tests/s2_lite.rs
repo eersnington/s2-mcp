@@ -159,6 +159,9 @@ impl Session {
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
         )?;
+        if result["isError"] == json!(true) {
+            return Err(format!("tool {name} failed: {result}").into());
+        }
         result["structuredContent"]
             .as_object()
             .map(|value| Value::Object(value.clone()))
