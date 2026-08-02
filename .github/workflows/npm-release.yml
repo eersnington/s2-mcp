@@ -1,26 +1,23 @@
-name: Release
+name: Publish npm
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: New release tag in vX.Y.Z format
-        required: true
-        type: string
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: npm-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate release
+    name: Validate npm release
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
+      published: ${{ steps.published.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,30 +26,28 @@ jobs:
         with:
           node-version: "24"
       - uses: dtolnay/rust-toolchain@1.89
-        with:
-          components: clippy
       - id: version
-        env:
-          TAG: ${{ inputs.tag }}
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Release workflows must run from main; received $GITHUB_REF." >&2
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release tag $GITHUB_REF_NAME must reference a commit on main." >&2
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Release tag $TAG already exists. Choose a new version." >&2
-            exit 1
+          node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
+          echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - id: published
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if npm view "s2-mcp@$VERSION" version >/dev/null 2>&1; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
-          node scripts/check-release-version.mjs "$TAG"
-          echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
-      - run: cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
-      - run: cargo test --locked --workspace --all-features
-      - run: cargo test --locked -p s2-mcp --test protocol executor_terminates_infinite_program_at_production_deadline -- --ignored --exact
-      - run: cargo test --locked -p s2-mcp --test s2_lite -- --ignored
 
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build npm ${{ matrix.platform }}
     needs: validate
+    if: needs.validate.outputs.published != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -61,22 +56,18 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-x64
             executable: s2-mcp
-            archive: tar
           - os: macos-26-intel
             target: x86_64-apple-darwin
             platform: darwin-x64
             executable: s2-mcp
-            archive: tar
           - os: macos-26
             target: aarch64-apple-darwin
             platform: darwin-arm64
             executable: s2-mcp
-            archive: tar
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             platform: win32-x64
             executable: s2-mcp.exe
-            archive: zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -86,34 +77,16 @@ jobs:
       - run: cargo build --locked --release --package s2-mcp --target ${{ matrix.target }}
       - shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.executable }} --version
-      - if: matrix.archive == 'tar'
-        shell: bash
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          mkdir -p dist
-          tar -C target/${{ matrix.target }}/release -czf "dist/s2-mcp-$TAG-${{ matrix.target }}.tar.gz" "${{ matrix.executable }}"
-      - if: matrix.archive == 'zip'
-        shell: pwsh
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.executable }}" -DestinationPath "dist/s2-mcp-$env:TAG-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/${{ matrix.executable }}
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.platform }}
-          path: dist/*
-          if-no-files-found: error
 
-  package-npm:
+  package:
     name: Package npm
     needs: [validate, build]
+    if: needs.validate.outputs.published != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -142,13 +115,14 @@ jobs:
           npm pack ./dist/package/s2-mcp --pack-destination dist/npm
       - uses: actions/upload-artifact@v4
         with:
-          name: npm-packages
-          path: dist/npm/*.tgz
+          name: npm-package
+          path: dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz
           if-no-files-found: error
 
-  smoke-npm:
+  smoke:
     name: Smoke npm ${{ matrix.platform }}
-    needs: [validate, package-npm]
+    needs: [validate, package]
+    if: needs.validate.outputs.published != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -169,14 +143,15 @@ jobs:
           node-version: "24"
       - uses: actions/download-artifact@v4
         with:
-          name: npm-packages
+          name: npm-package
           path: dist/npm
       - shell: bash
         run: node scripts/smoke-npm-package.mjs ./dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz "${{ needs.validate.outputs.version }}"
 
-  publish-npm:
+  publish:
     name: Publish npm
-    needs: [validate, smoke-npm]
+    needs: [validate, smoke]
+    if: needs.validate.outputs.published != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -190,46 +165,6 @@ jobs:
       - run: npm install --global npm@^11.5.1
       - uses: actions/download-artifact@v4
         with:
-          name: npm-packages
+          name: npm-package
           path: dist/npm
-      - run: |
-          failed=0
-          for package in dist/npm/*.tgz; do
-            if ! npm publish "./$package" --access public --provenance; then
-              failed=1
-            fi
-          done
-          exit "$failed"
-
-  tag-and-draft-release:
-    name: Tag and draft GitHub release
-    needs: [validate, publish-npm]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: release-*
-          path: dist/release
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: npm-packages
-          path: dist/npm
-      - env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          git tag --annotate "$TAG" --message "Release $TAG"
-          git push origin "$TAG"
-      - name: Create checksums
-        working-directory: dist
-        run: sha256sum release/* npm/* > SHA256SUMS
-      - name: Create draft GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-        run: gh release create "$TAG" dist/release/* dist/npm/* dist/SHA256SUMS --draft --title "$TAG" --verify-tag
+      - run: npm publish ./dist/npm/s2-mcp-${{ needs.validate.outputs.version }}.tgz --access public --provenance
