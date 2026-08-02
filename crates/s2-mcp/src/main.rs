@@ -92,9 +92,29 @@ enum InternalCommand {
     Execute,
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    let runtime = if matches!(&cli.command, Some(InternalCommand::Execute)) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+    };
+    let runtime = match runtime {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("failed to create Tokio runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> ExitCode {
     if should_show_interactive_guidance(cli.command.as_ref(), io::stdin().is_terminal()) {
         if let Err(error) = print_interactive_help() {
             eprintln!("failed to print help: {error}");
