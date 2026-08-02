@@ -7,7 +7,7 @@
 Run the published package without a global installation:
 
 ```sh
-npx --yes s2-mcp
+npx s2-mcp
 ```
 
 Or clone the repository and install from source:
@@ -37,11 +37,11 @@ Configure the MCP to your preferred agent client like Codex, Claude Code, OpenCo
 {
   "s2-cloud": {
     "command": "npx",
-    "args": ["--yes", "s2-mcp"]
+    "args": ["s2-mcp"]
   },
   "s2-dev": {
     "command": "npx",
-    "args": ["--yes", "s2-mcp", "--dev"]
+    "args": ["s2-mcp", "--dev"]
   }
 }
 ```
