@@ -21,7 +21,6 @@ use crate::error::{Error, Result};
 const MAX_READ_RECORDS: usize = 100;
 const MAX_READ_BYTES: usize = 256 * 1024;
 const MIN_READ_OUTPUT_BYTES: usize = 1024;
-const DEFAULT_READ_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_READ_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_WAIT_SECONDS: u32 = 25;
 const WAIT_RESPONSE_GRACE_SECONDS: u64 = 1;
@@ -136,7 +135,7 @@ fn read_bounds(
     Ok(ReadBounds {
         count: bounded(count.unwrap_or(MAX_READ_RECORDS), MAX_READ_RECORDS, "limit")?,
         bytes: bounded(bytes.unwrap_or(MAX_READ_BYTES), MAX_READ_BYTES, "max_bytes")?,
-        output_bytes: bounded_read_output_bytes(output_bytes.unwrap_or(DEFAULT_READ_OUTPUT_BYTES))?,
+        output_bytes: bounded_read_output_bytes(output_bytes.unwrap_or(MAX_READ_OUTPUT_BYTES))?,
     })
 }
 
